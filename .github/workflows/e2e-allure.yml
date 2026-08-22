@@ -2,9 +2,9 @@ name: E2E Tests with Allure Report
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/remove-failing-ci-checks]
   pull_request:
-    branches: [main]
+    branches: [main, Dev]
 
 jobs:
   e2e:

@@ -2,7 +2,7 @@ name: Deploy Storybook to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/remove-failing-ci-checks]
     paths:
       - "frontend/**"
       - ".github/workflows/storybook.yml"
