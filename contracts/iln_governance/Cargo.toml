@@ -14,3 +14,7 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Issue #704: the E2E UpdateReputationBonusParams test needs the real
+# reputation_bonus contract (not a hand-rolled mock) to genuinely verify
+# its stored Config reflects a governance-executed change.
+reputation_bonus = { path = "../reputation_bonus" }

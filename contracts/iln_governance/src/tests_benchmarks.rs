@@ -51,11 +51,19 @@ fn setup_benchmark_env() -> BaseBenchEnv {
 
     let iln_contract = env.register_contract(None, MockIlnBench);
     let dist_contract = env.register_contract(None, MockIlnBench);
+    let rep_contract = env.register_contract(None, MockIlnBench);
     let admin = Address::generate(&env);
 
     let contract_id = env.register_contract(None, GovContract);
     let contract = GovContractClient::new(&env, &contract_id);
-    contract.initialize(&iln_contract, &dist_contract, &token_addr, &admin, &10_000);
+    contract.initialize(
+        &iln_contract,
+        &dist_contract,
+        &rep_contract,
+        &token_addr,
+        &admin,
+        &10_000,
+    );
 
     BaseBenchEnv {
         env,
