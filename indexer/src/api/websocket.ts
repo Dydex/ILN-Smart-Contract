@@ -1,5 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import type { Server } from 'node:http';
+import type { Server, IncomingMessage } from 'node:http';
 
 export interface IndexedEvent {
   type: string;
@@ -20,6 +20,7 @@ export interface WsEndpointOptions {
   heartbeatIntervalMs?: number;
   heartbeatTimeoutMs?: number;
   maxConnections?: number;
+  maxConnectionsPerIp?: number;
 }
 
 interface ClientState {
@@ -27,30 +28,45 @@ interface ClientState {
   filter: SubscriptionFilter | null;
   alive: boolean;
   lastPongAt: number;
+  ip: string;
 }
 
 const DEFAULT_HEARTBEAT_INTERVAL = 15_000;
 const DEFAULT_HEARTBEAT_TIMEOUT = 30_000;
 const DEFAULT_MAX_CONNECTIONS = 1000;
+const DEFAULT_MAX_CONNECTIONS_PER_IP = 5;
+
+function getIpFromReq(req: IncomingMessage | undefined): string {
+  if (!req) return 'unknown';
+  const xForwardedFor = req.headers['x-forwarded-for'];
+  if (xForwardedFor) {
+    if (typeof xForwardedFor === 'string') return xForwardedFor.split(',')[0].trim();
+    if (Array.isArray(xForwardedFor)) return xForwardedFor[0].split(',')[0].trim();
+  }
+  return req.socket.remoteAddress ?? 'unknown';
+}
 
 export class EventWebSocketEndpoint {
   private readonly wss: WebSocketServer;
   private readonly clients = new Set<ClientState>();
+  private readonly ipCounts = new Map<string, number>();
   private readonly heartbeatInterval: number;
   private readonly heartbeatTimeout: number;
   private readonly maxConnections: number;
+  private readonly maxConnectionsPerIp: number;
   private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(opts: WsEndpointOptions & { server?: Server; noServer?: boolean } = {}) {
     this.heartbeatInterval = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL;
     this.heartbeatTimeout = opts.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT;
     this.maxConnections = opts.maxConnections ?? DEFAULT_MAX_CONNECTIONS;
+    this.maxConnectionsPerIp = opts.maxConnectionsPerIp ?? DEFAULT_MAX_CONNECTIONS_PER_IP;
     this.wss = new WebSocketServer({
       server: opts.server,
       path: opts.path ?? '/events',
       noServer: opts.noServer,
     });
-    this.wss.on('connection', (ws) => this.onConnection(ws));
+    this.wss.on('connection', (ws, req) => this.onConnection(ws, req));
   }
 
   start(): void {
@@ -65,6 +81,7 @@ export class EventWebSocketEndpoint {
     }
     for (const c of this.clients) c.ws.terminate();
     this.clients.clear();
+    this.ipCounts.clear();
     this.wss.close();
   }
 
@@ -90,16 +107,26 @@ export class EventWebSocketEndpoint {
     });
   }
 
-  private onConnection(ws: WebSocket): void {
+  private onConnection(ws: WebSocket, req?: IncomingMessage): void {
     if (this.clients.size >= this.maxConnections) {
       ws.close(1013, 'max_connections');
       return;
     }
+
+    const ip = getIpFromReq(req);
+    const count = this.ipCounts.get(ip) || 0;
+    if (count >= this.maxConnectionsPerIp) {
+      ws.close(1013, 'max_connections_per_ip');
+      return;
+    }
+    this.ipCounts.set(ip, count + 1);
+
     const state: ClientState = {
       ws,
       filter: null,
       alive: true,
       lastPongAt: Date.now(),
+      ip,
     };
     this.clients.add(state);
 
@@ -108,8 +135,24 @@ export class EventWebSocketEndpoint {
       state.alive = true;
       state.lastPongAt = Date.now();
     });
-    ws.on('close', () => this.clients.delete(state));
-    ws.on('error', () => this.clients.delete(state));
+    ws.on('close', () => {
+      this.clients.delete(state);
+      const currentCount = this.ipCounts.get(ip) || 0;
+      if (currentCount <= 1) {
+        this.ipCounts.delete(ip);
+      } else {
+        this.ipCounts.set(ip, currentCount - 1);
+      }
+    });
+    ws.on('error', () => {
+      this.clients.delete(state);
+      const currentCount = this.ipCounts.get(ip) || 0;
+      if (currentCount <= 1) {
+        this.ipCounts.delete(ip);
+      } else {
+        this.ipCounts.set(ip, currentCount - 1);
+      }
+    });
   }
 
   private onMessage(state: ClientState, raw: string): void {
@@ -142,6 +185,12 @@ export class EventWebSocketEndpoint {
       if (!client.alive && now - client.lastPongAt >= this.heartbeatTimeout) {
         client.ws.terminate();
         this.clients.delete(client);
+        const currentCount = this.ipCounts.get(client.ip) || 0;
+        if (currentCount <= 1) {
+          this.ipCounts.delete(client.ip);
+        } else {
+          this.ipCounts.set(client.ip, currentCount - 1);
+        }
         continue;
       }
       client.alive = false;
@@ -149,6 +198,12 @@ export class EventWebSocketEndpoint {
         client.ws.ping();
       } catch {
         this.clients.delete(client);
+        const currentCount = this.ipCounts.get(client.ip) || 0;
+        if (currentCount <= 1) {
+          this.ipCounts.delete(client.ip);
+        } else {
+          this.ipCounts.set(client.ip, currentCount - 1);
+        }
       }
     }
   }
