@@ -1781,6 +1781,50 @@ fn test_quadratic_voting_reduces_whale_dominance_ratio() {
     assert_eq!(p_whale.votes_for / p_minnow.votes_for, 10);
 }
 
+/// Simulates a realistic power-law distribution to verify quadratic voting
+/// effectively reduces whale dominance without ignoring them entirely.
+#[test]
+fn test_quadratic_voting_realistic_distribution_audit() {
+    extern crate std;
+    let t = setup();
+    
+    // Generate 1 whale (500k), 5 dolphins (50k each), 50 shrimps (5k each)
+    let whale = Address::generate(&t.env);
+    t.gov_token_admin.mint(&whale, &500_000);
+    
+    let mut dolphins = std::vec::Vec::new();
+    for _ in 0..5 {
+        let a = Address::generate(&t.env);
+        t.gov_token_admin.mint(&a, &50_000);
+        dolphins.push(a);
+    }
+    
+    let mut shrimps = std::vec::Vec::new();
+    for _ in 0..50 {
+        let a = Address::generate(&t.env);
+        t.gov_token_admin.mint(&a, &5_000);
+        shrimps.push(a);
+    }
+
+    t.contract.set_quadratic_voting_enabled(&true);
+
+    let id = create_fee_proposal(&t);
+    
+    t.contract.cast_vote(&whale, &id, &true);
+    for dolphin in &dolphins {
+        t.contract.cast_vote(dolphin, &id, &true);
+    }
+    for shrimp in &shrimps {
+        t.contract.cast_vote(shrimp, &id, &true);
+    }
+
+    let p = t.contract.get_proposal(&id);
+    assert_eq!(p.votes_for, 5322); // 707 + 1115 + 3500 = 5322
+    
+    let applied_weight_whale = t.contract.get_applied_vote_weight(&whale, &id);
+    assert_eq!(applied_weight_whale, 707);
+}
+
 /// Quadratic voting also applies to delegated weight: own + delegated is
 /// summed first, then the square root is taken of the combined total.
 #[test]
