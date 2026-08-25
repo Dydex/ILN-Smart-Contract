@@ -96,13 +96,21 @@ fn setup() -> GovIntegrationEnv {
     iln.initialize(&admin, &payment_token_addr, &eurc_addr, &xlm_addr);
 
     // ── Governance contract ───────────────────────────────────────────────
-    // Distribution contract isn't exercised by these tests (no
-    // distribution-related proposals), so a generated placeholder address
-    // is sufficient.
+    // Distribution and reputation_bonus contracts aren't exercised by these
+    // tests (no distribution- or reputation-bonus-related proposals), so
+    // generated placeholder addresses are sufficient.
     let dist_addr = Address::generate(&env);
+    let rep_bonus_addr = Address::generate(&env);
     let governance_id = env.register_contract(None, GovContract);
     let governance = GovContractClient::new(&env, &governance_id);
-    governance.initialize(&iln_id, &dist_addr, &gov_token_addr, &admin, &GOV_TOTAL_SUPPLY);
+    governance.initialize(
+        &iln_id,
+        &dist_addr,
+        &rep_bonus_addr,
+        &gov_token_addr,
+        &admin,
+        &GOV_TOTAL_SUPPLY,
+    );
 
     // Fix ledger timestamp.
     let mut ledger = env.ledger().get();
