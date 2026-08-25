@@ -99,3 +99,25 @@ describe('filter helpers', () => {
     expect(matchesFilter({ type: 'X' }, { types: ['Y'] })).toBe(false);
   });
 });
+
+  it('rejects connections over maxConnectionsPerIp', async () => {
+    const clients = [];
+    let rejected = false;
+    for (let i = 0; i < 6; i++) {
+      const client = new WebSocket(`ws://localhost:${port}/events`);
+      clients.push(client);
+      
+      const p = new Promise<void>((resolve) => {
+        client.on('open', resolve);
+        client.on('close', (code, reason) => {
+          if (code === 1013 && reason.toString() === 'max_connections_per_ip') {
+            rejected = true;
+          }
+          resolve();
+        });
+      });
+      await p;
+    }
+    expect(rejected).toBe(true);
+    for (const c of clients) c.close();
+  });

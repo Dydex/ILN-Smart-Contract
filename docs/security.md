@@ -10,7 +10,7 @@ ILN spans Soroban smart contracts, a TypeScript SDK, a CLI, an indexer, and a no
 | SDK | XDR encoding, transaction construction, signing flow, contract ID handling, and client-side validation defects | [sdk](../sdk), [SDK Integration](sdk-integration.md) |
 | CLI | Wallet profile handling, local secret storage, command validation, and network configuration defects | [cli](../cli), [CLI README](../cli/README.md) |
 | Indexer | API behavior, event ingestion, database handling, cache safety, and denial-of-service exposure | [indexer](../indexer) |
-| Notifications | Webhook subscription handling, HMAC signing, SSRF defenses, rate limiting, and circuit breaker behavior | [notifications](../notifications), [notifications README](../notifications/README.md) |
+| Notifications | Webhook subscription handling, HMAC signing, SSRF defenses, rate limiting, and circuit breaker behavior | [notifications](../notifications), [webhook verification](webhook-verification.md) |
 | CI/CD and deployment scripts | Secret handling, deployment correctness, artifact integrity, and release automation | [.github/workflows](../.github/workflows), [scripts](../scripts) |
 
 Out of scope: spam, social engineering, physical attacks, attacks requiring compromised maintainer machines, and findings that only affect unsupported local configurations without a protocol or user-impact path.
