@@ -15,6 +15,11 @@ soroban-sdk = { workspace = true }
 [dev-dependencies]
 ed25519-dalek = "2.2.0"
 iln_governance = { path = "../iln_governance" }
+# Issue #706: the full-protocol-lifecycle test needs the real
+# iln_distribution and reputation_bonus contracts to genuinely exercise all
+# five contracts' cross-contract wiring, not mocks.
+iln_distribution = { path = "../iln_distribution" }
+reputation_bonus = { path = "../reputation_bonus" }
 proptest = { workspace = true }
 rand = { workspace = true }
 serde_json = "1.0.149"
@@ -31,3 +36,7 @@ path = "../tests/governance_main_integration_test.rs"
 [[test]]
 name = "oracle_integration_test"
 path = "../tests/oracle_integration_test.rs"
+
+[[test]]
+name = "full_protocol_lifecycle_test"
+path = "../tests/full_protocol_lifecycle_test.rs"
