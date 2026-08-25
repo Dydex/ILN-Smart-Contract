@@ -245,3 +245,64 @@ fn test_successful_resolution_emits_attempt_event_with_success_true() {
         events.events().len()
     );
 }
+
+// ── Issue #708: randomized tie-breaking fairness ────────────────────────────
+//
+// Prior to this fix, resolve_fund_queue always selected the first entry
+// inserted among LPs tied on score (join_fund_queue's `score < new_score`
+// insertion, strictly less-than, puts a tying LP after existing equal-score
+// entries). That made the outcome for a tie fully predictable and gameable
+// by whoever submits first. This test creates many independent ties between
+// the same two LPs (both default to score 0, so joining the same invoice
+// queue in the same order is a tie every time) and asserts the winner isn't
+// always the same address across all of them — proof the PRNG path is
+// actually exercised, not dead code that happens to always pick index 0.
+
+#[test]
+fn test_tie_resolution_is_not_always_the_first_joiner() {
+    let t = setup_mev();
+
+    let mut lp_a_wins = 0;
+    let mut lp_b_wins = 0;
+
+    for _ in 0..20 {
+        let id = submit_invoice_mev(&t);
+        // Both default to score 0 — a genuine tie every time.
+        t.contract.join_fund_queue(&t.lp_a, &id);
+        t.contract.join_fund_queue(&t.lp_b, &id);
+        advance_ledgers(&t.env, QUEUE_DELAY_LEDGERS);
+
+        let winner = t.contract.resolve_fund_queue(&id);
+        if winner == t.lp_a {
+            lp_a_wins += 1;
+        } else if winner == t.lp_b {
+            lp_b_wins += 1;
+        } else {
+            panic!("resolve_fund_queue returned neither tied LP");
+        }
+    }
+
+    assert_eq!(lp_a_wins + lp_b_wins, 20);
+    // Both LPs are equally eligible on every tie — if tie-breaking were
+    // still deterministic (always the first joiner), one side would be 20
+    // and the other 0. Either side winning at least once is enough to prove
+    // randomness is actually influencing the outcome.
+    assert!(
+        lp_a_wins > 0 && lp_b_wins > 0,
+        "expected both tied LPs to win at least once across 20 ties, got lp_a={lp_a_wins} lp_b={lp_b_wins}"
+    );
+}
+
+#[test]
+fn test_resolve_queue_still_resolves_deterministically_for_a_single_lp() {
+    // No tie at all (only one LP in the queue) — the PRNG-gated tied_count
+    // check must not change the existing single-candidate behavior.
+    let t = setup_mev();
+    let id = submit_invoice_mev(&t);
+
+    t.contract.join_fund_queue(&t.lp_a, &id);
+    advance_ledgers(&t.env, QUEUE_DELAY_LEDGERS);
+
+    let winner = t.contract.resolve_fund_queue(&id);
+    assert_eq!(winner, t.lp_a);
+}
