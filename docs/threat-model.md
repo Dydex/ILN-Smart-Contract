@@ -438,6 +438,27 @@ if min_discount_rate_bps == 0 {
 
 ---
 
+#### E3. Flash-Loan Balance Manipulation (Vote-Snapshotting)
+
+**Description:**
+Governance token balances determine voting weight in the ILN contract. To prevent users from voting and transferring tokens to double-vote, the contract uses a lazy-snapshot mechanism (Issue #738). However, this snapshot is taken dynamically at the exact time `cast_vote()` is called for most voters (only the proposer's balance is snapshotted at `create_proposal()`).
+
+**Attack Scenario:**
+```
+1. A lending protocol on Stellar offers flash loans for the ILN governance token.
+2. An attacker borrows a massive amount of governance tokens via a flash loan.
+3. In the same transaction, the attacker calls `cast_vote()` on a target proposal.
+4. The lazy-snapshot logic observes the artificially inflated balance, permanently recording it as their snapshotted weight for that proposal.
+5. The attacker repays the flash loan.
+```
+
+**Residual Risk:** ⚠️ **HIGH**
+Since Soroban lacks a native historical state-proof or checkpointing mechanism, the lazy-snapshot technique leaves the contract vulnerable to flash-loan manipulation if the token becomes composable in DeFi. Quadratic voting reduces the impact but does not eliminate it.
+
+**Recommendation:**
+If the governance token becomes widely flash-loanable, the protocol must transition to a staking-based governance model (e.g., locking tokens in an escrow vault for the duration of the proposal) or integrate with an oracle that provides cryptographic proofs of historical ledger balances prior to proposal creation.
+
+
 ### F. TOKEN TRANSFER EDGE CASES
 
 #### F1. Token Transfer Fails, But State Is Updated
