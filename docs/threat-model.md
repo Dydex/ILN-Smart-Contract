@@ -227,6 +227,29 @@ let best_candidate = queue.iter()
   critical (funds custody, auth) depends on the outcome, only which of
   several already-eligible LPs is selected
 
+**Clarification — post-resolution transfer is NOT a fairness bypass (Issue #712):**
+`transfer_lp_position()` lets a funded invoice's LP hand their position to any
+other address, with no check against funding-queue history. This means a
+queue winner can immediately transfer their position to the address that
+*lost* the same queue resolution — functionally equivalent to a private
+side arrangement where the "loser" ends up funding the invoice anyway. This
+is **intentional, documented secondary-market behavior**, not an accidental
+bypass of the queue's fairness guarantee:
+- The queue's fairness guarantee is specifically about *who gets first
+  crack at funding the invoice* (reputation-weighted, randomized on ties
+  per Issue #708) — it says nothing about what either party does with the
+  resulting position afterward.
+- `transfer_lp_position()` already exists as a general-purpose position
+  handoff mechanism used elsewhere in the protocol, independent of whether
+  the position originated from a queue resolution, a direct `fund_invoice()`
+  call, or anything else — restricting it specifically for queue-originated
+  positions would be an arbitrary carve-out with no clear security benefit,
+  since the two parties could achieve the same economic outcome through an
+  off-chain side payment regardless.
+- See `test_queue_winner_can_transfer_position_to_queue_loser` in
+  `tests_mev_mitigation.rs` for a test confirming this works exactly as
+  `transfer_lp_position` intends elsewhere in the protocol.
+
 ---
 
 #### B2. Discount Rate Manipulation via Reputation Decay

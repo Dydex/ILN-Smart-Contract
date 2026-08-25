@@ -306,3 +306,51 @@ fn test_resolve_queue_still_resolves_deterministically_for_a_single_lp() {
     let winner = t.contract.resolve_fund_queue(&id);
     assert_eq!(winner, t.lp_a);
 }
+
+// ── Issue #712: queue winner transferring to the queue loser is expected ────
+//
+// transfer_lp_position() lets an LP hand off their funded position to any
+// other address, with no restriction tied to funding-queue history. This
+// test confirms that a queue winner immediately transferring their position
+// to the address that *lost* the same queue resolution works exactly like
+// any other transfer_lp_position() call — this is intentional, documented
+// secondary-market behavior (see docs/threat-model.md), not a queue-fairness
+// bug. The queue's fairness guarantee is about *who gets first crack at
+// funding the invoice* (reputation-weighted, now randomized on ties per
+// Issue #708) — what either party does with their position afterward,
+// including a private arrangement to hand it off, is a separate concern
+// this contract deliberately doesn't restrict.
+
+#[test]
+fn test_queue_winner_can_transfer_position_to_queue_loser() {
+    let t = setup_mev();
+    let id = submit_invoice_mev(&t);
+
+    // Both lp_a and lp_b join the queue (tied at score 0 — see Issue #708's
+    // randomized tie-break, exercised incidentally here); whichever wins,
+    // the other is the "loser" for this test's purpose.
+    t.contract.join_fund_queue(&t.lp_a, &id);
+    t.contract.join_fund_queue(&t.lp_b, &id);
+    advance_ledgers(&t.env, QUEUE_DELAY_LEDGERS);
+
+    let winner = t.contract.resolve_fund_queue(&id);
+    let loser = if winner == t.lp_a { t.lp_b.clone() } else { t.lp_a.clone() };
+
+    // Winner funds the invoice, then transfers the resulting position
+    // straight to the losing queue participant.
+    t.contract.fund_invoice(&winner, &id, &INVOICE_AMOUNT, &false);
+    let result = t.contract.try_transfer_lp_position(&id, &loser);
+
+    assert!(
+        result.is_ok(),
+        "transfer_lp_position must succeed for a queue winner transferring to the queue loser — \
+         this is expected secondary-market behavior, not something the queue mechanism restricts"
+    );
+
+    let invoice = t.contract.get_invoice(&id);
+    assert_eq!(
+        invoice.funder,
+        Some(loser),
+        "the transferred-to address must now be the recorded funder"
+    );
+}
