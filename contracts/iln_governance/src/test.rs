@@ -636,6 +636,45 @@ fn test_cycle_prevention_indirect_a_b_c_a() {
     t.contract.delegate_votes(&voter_c, &t.voter_a); // must panic
 }
 
+fn build_delegation_chain(t: &TestSetup, length: u32) {
+    extern crate std;
+    let mut nodes = std::vec::Vec::new();
+    for _ in 0..length {
+        let a = Address::generate(&t.env);
+        t.gov_token_admin.mint(&a, &100);
+        nodes.push(a);
+    }
+    for i in 0..(length - 1) {
+        t.contract.delegate_votes(&nodes[i as usize], &nodes[(i + 1) as usize]);
+    }
+    // Create cycle at the end
+    t.contract.delegate_votes(&nodes[(length - 1) as usize], &nodes[0]);
+}
+
+#[test]
+#[should_panic]
+fn test_cycle_prevention_chain_5() {
+    let t = setup();
+    t.env.budget().reset_unlimited();
+    build_delegation_chain(&t, 5);
+}
+
+#[test]
+#[should_panic]
+fn test_cycle_prevention_chain_10() {
+    let t = setup();
+    t.env.budget().reset_unlimited();
+    build_delegation_chain(&t, 10);
+}
+
+#[test]
+#[should_panic]
+fn test_cycle_prevention_chain_25() {
+    let t = setup();
+    t.env.budget().reset_unlimited();
+    build_delegation_chain(&t, 25);
+}
+
 #[test]
 fn test_redelegation_moves_weight_to_new_delegate() {
     let t = setup();
