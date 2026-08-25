@@ -1384,10 +1384,35 @@ impl InvoiceLiquidityContract {
             }
         }
 
-        // Queue is sorted by score (descending), so highest score is at index 0.
-        let best_entry = queue.get(0).unwrap();
+        // Queue is sorted by score (descending), so the highest score is at
+        // index 0 — but join_fund_queue's insertion (`score < new_score`,
+        // strictly less-than) breaks ties by join order, meaning the LP who
+        // joins first among equal-reputation competitors always wins
+        // deterministically. That's the gameable ordering the threat model
+        // (docs/threat-model.md, "Add Randomness to Queue Tie-Breaking")
+        // flagged as an open recommendation (Issue #708): a would-be LP with
+        // knowledge of another LP's equal reputation gains nothing from
+        // reputation, only from being first to submit.
+        //
+        // All entries tied for the top score form a contiguous prefix
+        // (queue[0..tied_count]), since the queue is sorted by score alone.
+        // When there's more than one, pick uniformly among them using
+        // Soroban's network-seeded PRNG instead of always taking index 0.
+        let best_score = queue.get(0).unwrap().score;
+        let mut tied_count: u32 = 1;
+        while tied_count < queue.len() && queue.get(tied_count).unwrap().score == best_score {
+            tied_count += 1;
+        }
+        let winner_index: u32 = if tied_count > 1 {
+            // GenRange is only implemented for u64 in this soroban-sdk
+            // version — generate as u64, then narrow (safe: tied_count is a
+            // small queue length, well within u32 range).
+            env.prng().gen_range::<u64>(0..u64::from(tied_count)) as u32
+        } else {
+            0
+        };
+        let best_entry = queue.get(winner_index).unwrap();
         let best_lp = best_entry.lp.clone();
-        let best_score = best_entry.score;
 
         save_queue_resolution(&env, invoice_id, &best_lp);
 

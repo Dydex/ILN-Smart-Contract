@@ -111,6 +111,10 @@ pub enum ProposalAction {
     /// Issue #532: remove the default oracle for a feed type from the ILN
     /// contract's oracle registry.
     RemoveOracle(OracleFeedType),
+    /// Issue #704: update reputation_bonus contract parameters.
+    /// Tuple: (high_rep_threshold, bonus_bps, min_discount_rate_bps) —
+    /// mirrors reputation_bonus::config::Config's fields.
+    UpdateReputationBonusParams(u32, u32, u32),
 }
 
 /// Issue #532: mirrors `invoice_liquidity::oracle_registry::OracleFeedType`.
@@ -307,6 +311,9 @@ pub enum StorageKey {
     MinProposalBalance,
     /// Issue #544: distribution contract address for reward param updates.
     DistributionContract,
+    /// Issue #704: reputation_bonus contract address for
+    /// UpdateReputationBonusParams execution.
+    ReputationBonusContract,
 }
 
 // ================================================================
@@ -324,6 +331,7 @@ impl GovContract {
         env: Env,
         iln_contract: Address,
         distribution_contract: Address,
+        reputation_bonus_contract: Address,
         gov_token: Address,
         admin: Address,
         gov_token_total_supply: i128,
@@ -337,6 +345,10 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::DistributionContract, &distribution_contract);
+        env.storage().instance().set(
+            &StorageKey::ReputationBonusContract,
+            &reputation_bonus_contract,
+        );
         env.storage()
             .instance()
             .set(&StorageKey::GovToken, &gov_token);
@@ -1121,6 +1133,29 @@ impl GovContract {
                         "set_premium_rate_via_governance",
                         args,
                     )
+                }
+                ProposalAction::UpdateReputationBonusParams(
+                    high_rep_threshold,
+                    bonus_bps,
+                    min_discount_rate_bps,
+                ) => {
+                    let rep_contract: Address = env
+                        .storage()
+                        .instance()
+                        .get(&StorageKey::ReputationBonusContract)
+                        .unwrap();
+                    // update_config's `caller` param is checked against the
+                    // reputation_bonus contract's stored admin — that admin
+                    // must be set to this governance contract's own address
+                    // at deployment time for this call to authorize.
+                    let args: Vec<soroban_sdk::Val> = vec![
+                        &env,
+                        env.current_contract_address().into_val(&env),
+                        high_rep_threshold.into_val(&env),
+                        bonus_bps.into_val(&env),
+                        min_discount_rate_bps.into_val(&env),
+                    ];
+                    Self::invoke_and_check(&env, &rep_contract, "update_config", args)
                 }
                 ProposalAction::RegisterOracle(feed_type, oracle) => {
                     let args: Vec<soroban_sdk::Val> =

@@ -127,6 +127,59 @@ The `resolve_appeal()` and `resolve_dispute()` functions are called by admin and
 
 ### B. FRONT-RUNNING ATTACKS
 
+#### B0. Ordinary `fund_invoice()` Front-Running (Issue #707)
+
+**Description:**
+`tests_mev_mitigation.rs` covers the priority-queue path (B1 below) for genuinely
+simultaneous funding attempts, but ordinary (non-queued) `fund_invoice()` calls have no
+dedicated analysis: could a validator or searcher observing a pending `fund_invoice()`
+transaction front-run it the way an EVM searcher front-runs a profitable mempool
+transaction?
+
+**Stellar's transaction ordering model, and why it doesn't map onto EVM-style MEV:**
+- Stellar uses the Stellar Consensus Protocol (SCP), a federated Byzantine agreement
+  scheme — there is no single block proposer/miner per ledger close who unilaterally
+  orders transactions the way an Ethereum block builder does. Validators nominate
+  candidate transaction sets and vote to converge on one per ~5s ledger close.
+- Within a ledger close, transaction ordering across the included set is not an open
+  priority-fee auction a searcher can win by outbidding — Stellar's fee model
+  (base fee + optional inclusion fee under surge pricing) determines *whether* a
+  transaction is included under network congestion, not an arbitrary reordering
+  priority a searcher can exploit to insert a transaction ahead of a specific target
+  once both are in the candidate set.
+- There is no widely-deployed, EVM-Flashbots-equivalent private-orderflow/searcher
+  infrastructure for Stellar today that would let a party reliably observe a pending
+  `fund_invoice()` call and construct a transaction guaranteed to land immediately
+  before it.
+
+**Why `fund_invoice()` specifically isn't a profitable front-running target even where
+ordering *could* be influenced:**
+- Classic EVM front-running/sandwich attacks extract value from a **price-sensitive**
+  operation (an AMM swap with slippage) — the victim's trade moves a price the
+  front-runner can arbitrage. `fund_invoice()` has no such mechanism: the invoice's
+  discount rate, fee, and terms are fixed at invoice-creation time and read verbatim
+  by whichever transaction executes, in whichever order. A front-runner who funds
+  first gets the same fixed terms the original caller would have gotten — there is no
+  slippage, no price impact, and nothing to extract *from* the original caller's
+  transaction. The only thing at stake is which of two willing LPs funds the invoice
+  first, a race condition, not value extraction.
+
+**Residual Risk:** ✅ **LOW** — Stellar's consensus model doesn't expose the
+block-builder-controlled reordering that EVM front-running relies on, and even if a
+transaction's relative position could be influenced, `fund_invoice()` has no
+price-sensitive state for a front-runner to extract value from. This differs from the
+genuine (LOW-MEDIUM) risk already documented for the priority-queue path in B1, where
+multiple LPs *competing* for the same invoice via `join_fund_queue()`/
+`resolve_fund_queue()` do have a real (if narrow) tie-breaking-predictability concern —
+see Issue #708.
+
+**Recommendation:** No mitigation needed for ordinary `fund_invoice()` calls given the
+above. If Stellar's transaction ordering model changes materially (e.g. a future
+protocol upgrade introduces proposer-controlled reordering), this analysis should be
+revisited.
+
+---
+
 #### B1. LP Queue Position Manipulation
 
 **Description:**  
@@ -157,15 +210,22 @@ let best_candidate = queue.iter()
     .cloned();
 ```
 
-**Residual Risk:** ⚠️ **LOW-MEDIUM**
-- If multiple LPs have same reputation, selection is deterministic (first-in-queue)
+**Residual Risk:** ✅ **LOW** (was ⚠️ LOW-MEDIUM)
+- **Resolved (Issue #708):** ties among equal-reputation LPs are no longer
+  first-in-queue-deterministic — `resolve_fund_queue` now selects uniformly at
+  random among all tied top-score entries via `env.prng()`, Soroban's
+  network-seeded PRNG. See `contracts/invoice_liquidity/src/lib.rs`'s
+  `resolve_fund_queue` and the fairness tests in `tests_mev_mitigation.rs`.
 - Stellar's random sequence of validators makes pure front-running hard
-- However, LPs observing pending TXs could delay their own join to improve position
+- LPs observing pending TXs could still delay their own join to improve
+  position, but can no longer guarantee a win by being first among ties
 
 **Recommendation:**
-- Document fair queuing assumptions (Stellar validator randomness)
-- Consider adding randomness to tie-breaking (if Soroban supports PRNG)
 - Monitor queue resolution patterns for anomalies in off-chain analytics
+- Soroban's PRNG is validator-seeded, not a secret-entropy source (see the
+  crate's own `prng` module docs) — acceptable here since nothing security-
+  critical (funds custody, auth) depends on the outcome, only which of
+  several already-eligible LPs is selected
 
 ---
 
@@ -671,7 +731,8 @@ The pool accepts claims up to enrolled capacity. If claim frequency exceeds proj
 |--------|----------|-----------|---------------|
 | **Reentrancy (Token Transfers)** | HIGH | Checks-effects-interactions pattern | LOW-MEDIUM (token hooks unpredictable) |
 | **Reentrancy (Dispute Resolution)** | HIGH | Admin-only access | MEDIUM (if admin is DAO) |
-| **LP Queue Front-Running** | MEDIUM | Reputation snapshot, Stellar mempool randomness | LOW-MEDIUM (tie-breaking predictable) |
+| **LP Queue Front-Running** | MEDIUM | Reputation snapshot, Stellar mempool randomness, randomized PRNG tie-breaking (Issue #708) | LOW (tie-breaking no longer predictable) |
+| **`fund_invoice()` Front-Running (non-queue)** | LOW | No price-sensitive state to extract from; no EVM-style proposer-controlled reordering on Stellar (Issue #707) | LOW |
 | **Discount Rate Manipulation** | MEDIUM | Rate frozen at submission | LOW (no benefit to attacker) |
 | **Timestamp Manipulation** | MEDIUM | Consensus-based timestamp, ledger sequences | MEDIUM (51% validator attack) |
 | **Appeal Window Bypass** | MEDIUM | Ledger sequence windows | LOW (cryptographically protected) |
@@ -721,9 +782,11 @@ The pool accepts claims up to enrolled capacity. If claim frequency exceeds proj
    - Emit event for each reputation change (not just on demand)
    - Enable off-chain verification and anomaly detection
 
-8. **Add Randomness to Queue Tie-Breaking**  
-   - Prevent predictable LP selection when reputations are equal
-   - Requires Soroban PRNG support or external randomness beacon
+8. ✅ **Add Randomness to Queue Tie-Breaking** — Resolved (Issue #708)
+   - Soroban's `env.prng()` (network-seeded CSPRNG, available since well
+     before this workspace's soroban-sdk 27.x) now selects uniformly among
+     all top-score-tied LPs in `resolve_fund_queue`, instead of always the
+     first to join. See B1's residual-risk entry above.
 
 9. **Publish LP Risk Management Guide**  
    - Recommend KYC procedures, portfolio diversification, default rate monitoring

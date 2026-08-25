@@ -929,6 +929,7 @@ dependencies = [
 name = "iln_governance"
 version = "0.0.0"
 dependencies = [
+ "reputation_bonus",
  "soroban-sdk",
 ]
 
