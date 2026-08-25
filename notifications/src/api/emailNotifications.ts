@@ -18,8 +18,8 @@ const VALID_EMAIL_EVENTS = new Set<InvoiceEmailEventType>([
 export interface EmailNotificationsRouterOptions {
   tokenSecret: string;
   publicUrl: string;
-  now?: () => number;
-  unsubscribeTtlMs?: number;
+  now?: (() => number) | undefined;
+  unsubscribeTtlMs?: number | undefined;
 }
 
 export function createEmailNotificationsRouter(

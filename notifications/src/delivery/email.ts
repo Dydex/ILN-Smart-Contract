@@ -6,6 +6,7 @@ import {
   buildInvoiceExpiringSoonEmail,
   buildInvoiceFundedEmail,
   buildInvoicePaidEmail,
+  sanitizeHeader,
   type EmailContent,
   type InvoiceEmailBaseInput,
   type InvoiceExpiringSoonEmailInput,
@@ -23,18 +24,18 @@ export interface InvoiceEmailEvent {
   token: 'USDC' | 'EURC' | 'XLM';
   amount: string;
   dueDate: number;
-  address?: string;
-  freelancer?: string;
-  payer?: string;
-  funder?: string;
-  invoiceUrl?: string;
+  address?: string | undefined;
+  freelancer?: string | undefined;
+  payer?: string | undefined;
+  funder?: string | undefined;
+  invoiceUrl?: string | undefined;
 }
 
 export interface EmailNotificationOptions {
   publicUrl: string;
   tokenSecret: string;
-  unsubscribeTtlMs?: number;
-  now?: () => number;
+  unsubscribeTtlMs?: number | undefined;
+  now?: (() => number) | undefined;
 }
 
 export interface DeliveredEmailResult {
@@ -76,8 +77,8 @@ export function buildNotificationEmailMessage(
 
   const content: EmailContent = buildContent(event, baseInput, options);
   return {
-    to: subscription.email,
-    subject: content.subject,
+    to: sanitizeHeader(subscription.email),
+    subject: sanitizeHeader(content.subject),
     html: content.html,
     text: content.text,
   };

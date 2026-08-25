@@ -102,5 +102,93 @@ describe('createSubscriptionTokenService', () => {
     expect(svc.verify(`${tamperedBody}.${signature}`)).toBeNull();
     expect(body).toBeTruthy();
   });
+
+  it('guarantees token uniqueness across 1,000 generations with identical inputs (entropy audit)', () => {
+    const svc = createSubscriptionTokenService({
+      secret: 'test-secret',
+      now: () => 1_700_000_000_000,
+    });
+
+    const tokens = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      const token = svc.sign({
+        purpose: 'verify',
+        subscriptionId: 'sub_same_id',
+        address: 'GABC123',
+        email: 'user@example.com',
+        ttlMs: 60_000,
+      });
+      tokens.add(token);
+    }
+
+    expect(tokens.size).toBe(1000);
+  });
+
+  it('enforces single-use token consumption and prevents replay', () => {
+    const svc = createSubscriptionTokenService({
+      secret: 'test-secret',
+      now: () => 1_700_000_000_000,
+    });
+
+    const token = svc.sign({
+      purpose: 'verify',
+      subscriptionId: 'sub_1',
+      address: 'GABC123',
+      email: 'user@example.com',
+      ttlMs: 60_000,
+    });
+
+    expect(svc.isConsumed(token)).toBe(false);
+
+    const firstAttempt = svc.consume(token);
+    expect(firstAttempt).not.toBeNull();
+    expect(firstAttempt?.subscriptionId).toBe('sub_1');
+    expect(svc.isConsumed(token)).toBe(true);
+
+    const replayAttempt = svc.consume(token);
+    expect(replayAttempt).toBeNull();
+  });
+
+  it('rejects tokens claiming to be issued far in the future (clock skew protection)', () => {
+    const now = 1_700_000_000_000;
+    const svc = createSubscriptionTokenService({
+      secret: 'test-secret',
+      now: () => now,
+    });
+
+    const futureToken = encode(
+      {
+        purpose: 'verify',
+        subscriptionId: 'sub_1',
+        address: 'GABC123',
+        email: 'user@example.com',
+        issuedAt: now + 120_000,
+        expiresAt: now + 180_000,
+      },
+      'test-secret',
+    );
+
+    expect(svc.verify(futureToken)).toBeNull();
+    expect(svc.consume(futureToken)).toBeNull();
+  });
+
+  it('supports explicit token invalidation', () => {
+    const svc = createSubscriptionTokenService({
+      secret: 'test-secret',
+      now: () => 1_700_000_000_000,
+    });
+
+    const token = svc.sign({
+      purpose: 'verify',
+      subscriptionId: 'sub_1',
+      address: 'GABC123',
+      email: 'user@example.com',
+      ttlMs: 60_000,
+    });
+
+    svc.invalidate(token);
+    expect(svc.isConsumed(token)).toBe(true);
+    expect(svc.consume(token)).toBeNull();
+  });
 });
 

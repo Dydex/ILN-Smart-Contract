@@ -2,8 +2,8 @@ import { formatAmount, formatDueDate, renderInvoiceEmail, type EmailContent, typ
 import type { InvoiceEmailBaseInput } from './invoiceFunded.js';
 
 export interface InvoiceExpiringSoonEmailInput extends InvoiceEmailBaseInput {
-  reminderHours?: 72 | 24;
-  now?: number;
+  reminderHours?: 72 | 24 | undefined;
+  now?: number | undefined;
 }
 
 function resolveReminderHours(input: InvoiceExpiringSoonEmailInput): 72 | 24 {

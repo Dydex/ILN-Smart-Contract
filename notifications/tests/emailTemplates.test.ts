@@ -103,4 +103,76 @@ describe('invoice email templates', () => {
     expect(email.html).toContain('Standalone email');
     expect(email.text).toContain('Field: Value');
   });
+
+  describe('injection resistance and sanitization', () => {
+    it('neutralizes header injection attempts with CRLF in headings and subjects', () => {
+      const maliciousHeading = 'Invoice #42 funded\r\nBcc: evil@attacker.com\r\nSubject: Spoofed';
+      const email = renderInvoiceEmail({
+        heading: maliciousHeading,
+        summaryLines: ['Summary line\r\nInjected Header: value'],
+        details: [{ label: 'Field\r\nName', value: 'Value\r\nHeader: inject' }],
+        unsubscribeUrl: baseInput.unsubscribeUrl,
+      });
+
+      expect(email.subject).not.toContain('\r');
+      expect(email.subject).not.toContain('\n');
+      expect(email.subject).toBe('Invoice #42 funded Bcc: evil@attacker.com Subject: Spoofed');
+    });
+
+    it('escapes HTML tags and script injections across all template fields', () => {
+      const maliciousInput = {
+        ...baseInput,
+        freelancer: '<script>alert("freelancer")</script>',
+        payer: '<img src=x onerror=alert(1)>',
+        funder: '"><script>alert("funder")</script>',
+        recipientAddress: '<b onmouseover=alert("xss")>addr</b>',
+        token: '<svg onload=alert(1)>' as any,
+      };
+
+      const email = buildInvoiceFundedEmail(maliciousInput);
+
+      expect(email.html).not.toContain('<script>');
+      expect(email.html).not.toContain('</script>');
+      expect(email.html).not.toContain('<img src=x onerror=alert(1)>');
+      expect(email.html).not.toContain('<svg onload=alert(1)>');
+
+      expect(email.html).toContain('&lt;script&gt;alert(&quot;freelancer&quot;)&lt;/script&gt;');
+      expect(email.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      expect(email.html).toContain('&quot;&gt;&lt;script&gt;alert(&quot;funder&quot;)&lt;/script&gt;');
+      expect(email.html).toContain('&lt;b onmouseover=alert(&quot;xss&quot;)&gt;addr&lt;/b&gt;');
+    });
+
+    it('neutralizes malicious javascript: and data: pseudo-protocols in action and unsubscribe links', () => {
+      const maliciousEmail = renderInvoiceEmail({
+        heading: 'Invoice update',
+        summaryLines: ['Check details'],
+        details: [{ label: 'Status', value: 'Pending' }],
+        action: {
+          label: 'View details',
+          url: 'javascript:alert(document.cookie)',
+        },
+        unsubscribeUrl: 'data:text/html,<script>alert("evil")</script>',
+      });
+
+      expect(maliciousEmail.html).not.toContain('javascript:');
+      expect(maliciousEmail.html).not.toContain('data:text/html');
+      expect(maliciousEmail.html).toContain('href="#"');
+    });
+
+    it('allows legitimate https and http links in action and unsubscribe URLs', () => {
+      const email = renderInvoiceEmail({
+        heading: 'Legitimate email',
+        summaryLines: ['All good'],
+        details: [{ label: 'Status', value: 'Active' }],
+        action: {
+          label: 'View Invoice',
+          url: 'https://app.iln.dev/invoices/123?ref=notify',
+        },
+        unsubscribeUrl: 'https://notifications.iln.dev/unsubscribe?token=abc.xyz',
+      });
+
+      expect(email.html).toContain('href="https://app.iln.dev/invoices/123?ref=notify"');
+      expect(email.html).toContain('href="https://notifications.iln.dev/unsubscribe?token=abc.xyz"');
+    });
+  });
 });

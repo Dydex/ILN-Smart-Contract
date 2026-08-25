@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 export type SubscriptionTokenPurpose = 'verify' | 'unsubscribe';
 
@@ -7,13 +7,14 @@ export interface SubscriptionTokenPayload {
   subscriptionId: string;
   address: string;
   email: string;
+  nonce?: string | undefined;
   issuedAt: number;
   expiresAt: number;
 }
 
 export interface SubscriptionTokenServiceOptions {
   secret: string;
-  now?: () => number;
+  now?: (() => number) | undefined;
 }
 
 export interface TokenInput {
@@ -22,10 +23,12 @@ export interface TokenInput {
   address: string;
   email: string;
   ttlMs: number;
+  nonce?: string | undefined;
 }
 
 export function createSubscriptionTokenService(options: SubscriptionTokenServiceOptions) {
   const now = options.now ?? Date.now;
+  const consumedTokens = new Set<string>();
 
   return {
     sign(input: TokenInput): string {
@@ -35,6 +38,7 @@ export function createSubscriptionTokenService(options: SubscriptionTokenService
         subscriptionId: input.subscriptionId,
         address: input.address,
         email: input.email,
+        nonce: input.nonce ?? randomBytes(16).toString('hex'),
         issuedAt,
         expiresAt: issuedAt + input.ttlMs,
       };
@@ -44,6 +48,28 @@ export function createSubscriptionTokenService(options: SubscriptionTokenService
 
     verify(token: string): SubscriptionTokenPayload | null {
       return decodePayload(token, options.secret, now());
+    },
+
+    consume(token: string): SubscriptionTokenPayload | null {
+      const payload = decodePayload(token, options.secret, now());
+      if (!payload) {
+        return null;
+      }
+
+      if (consumedTokens.has(token)) {
+        return null;
+      }
+
+      consumedTokens.add(token);
+      return payload;
+    },
+
+    isConsumed(token: string): boolean {
+      return consumedTokens.has(token);
+    },
+
+    invalidate(token: string): void {
+      consumedTokens.add(token);
     },
   };
 }
@@ -84,12 +110,17 @@ function decodePayload(
       typeof parsed.address !== 'string' ||
       typeof parsed.email !== 'string' ||
       typeof parsed.issuedAt !== 'number' ||
-      typeof parsed.expiresAt !== 'number'
+      typeof parsed.expiresAt !== 'number' ||
+      (parsed.nonce !== undefined && typeof parsed.nonce !== 'string')
     ) {
       return null;
     }
 
     if (parsed.expiresAt < now) {
+      return null;
+    }
+
+    if (parsed.issuedAt > now + 60_000) {
       return null;
     }
 

@@ -18,7 +18,7 @@ const TOKEN_EMOJI: Record<string, string> = {
 };
 
 function tokenEmoji(token: string): string {
-  return TOKEN_EMOJI[token] ?? TOKEN_EMOJI.default;
+  return TOKEN_EMOJI[token] ?? TOKEN_EMOJI.default ?? '\u{26AB}';
 }
 
 function formatAmount(amount: string, token: string): string {

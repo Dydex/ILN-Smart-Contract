@@ -1,9 +1,9 @@
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export interface CircuitBreakerOptions {
-  failureThreshold?: number;
-  cooldownMs?: number;
-  now?: () => number;
+  failureThreshold?: number | undefined;
+  cooldownMs?: number | undefined;
+  now?: (() => number) | undefined;
 }
 
 export interface CircuitSnapshot {
