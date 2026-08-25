@@ -637,6 +637,40 @@ fn test_cycle_prevention_indirect_a_b_c_a() {
 }
 
 #[test]
+fn test_max_delegation_depth_cap_enforced() {
+    extern crate std;
+    let t = setup();
+    
+    // Default cap is 10. We will set it to 3 for testing.
+    t.env.mock_all_auths();
+    t.contract.set_max_delegation_depth(&3);
+
+    let nodes: std::vec::Vec<soroban_sdk::Address> = (0..5).map(|_| soroban_sdk::Address::generate(&t.env)).collect();
+    for a in &nodes { t.gov_token_admin.mint(a, &100); }
+
+    t.contract.delegate_votes(&nodes[0], &nodes[1]);
+    t.contract.delegate_votes(&nodes[1], &nodes[2]);
+    t.contract.delegate_votes(&nodes[2], &nodes[3]);
+    
+    // Adding one more should exceed the cap of 3
+}
+
+#[test]
+#[should_panic(expected = "MaxDelegationDepthExceeded")]
+fn test_max_delegation_depth_cap_exceeded_panics() {
+    extern crate std;
+    let t = setup();
+    t.env.mock_all_auths();
+    t.contract.set_max_delegation_depth(&3);
+
+    let nodes: std::vec::Vec<soroban_sdk::Address> = (0..5).map(|_| soroban_sdk::Address::generate(&t.env)).collect();
+    t.contract.delegate_votes(&nodes[0], &nodes[1]);
+    t.contract.delegate_votes(&nodes[1], &nodes[2]);
+    t.contract.delegate_votes(&nodes[2], &nodes[3]);
+    t.contract.delegate_votes(&nodes[3], &nodes[4]); // should panic
+}
+
+#[test]
 fn test_redelegation_moves_weight_to_new_delegate() {
     let t = setup();
     let voter_c = Address::generate(&t.env);

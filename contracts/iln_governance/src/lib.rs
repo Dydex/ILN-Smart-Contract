@@ -28,8 +28,8 @@ const VOTING_PERIOD_SECS: u64 = 259_200;
 /// Default minimum token balance required to submit a proposal (1 000 stroops).
 const DEFAULT_MIN_PROPOSAL_BALANCE: i128 = 1_000;
 
-/// Maximum transitive delegation chain depth we will traverse.
-const MAX_DELEGATION_DEPTH: u32 = 10;
+/// Default maximum transitive delegation chain depth.
+const DEFAULT_MAX_DELEGATION_DEPTH: u32 = 10;
 
 // ================================================================
 // Governance error enum
@@ -67,6 +67,8 @@ pub enum GovernanceError {
     /// Issue #531: the cross-contract execution call failed. The proposal
     /// remains in `Passed` status so `execute_proposal` can be retried.
     ExecutionFailed = 20,
+    /// Delegation chain exceeds the maximum depth cap.
+    MaxDelegationDepthExceeded = 21,
 }
 
 // ================================================================
@@ -298,6 +300,7 @@ pub enum StorageKey {
     ExecutionDelay,
     /// Issue #68: the admin address (set at initialise time).
     Admin,
+    MaxDelegationDepth,
     /// Issue #68: when `true`, admin veto power is active; when `false`, it has been disabled.
     VetoPowerEnabled,
     /// Configurable minimum token balance a proposer must hold.
@@ -344,6 +347,7 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::MinQuorumBps, &DEFAULT_MIN_QUORUM_BPS);
+        env.storage().instance().set(&StorageKey::MaxDelegationDepth, &DEFAULT_MAX_DELEGATION_DEPTH);
         env.storage()
             .instance()
             .set(&StorageKey::ProposalCount, &0_u64);
@@ -378,6 +382,19 @@ impl GovContract {
             .instance()
             .get(&StorageKey::MinQuorumBps)
             .unwrap_or(DEFAULT_MIN_QUORUM_BPS)
+    }
+
+    pub fn get_max_delegation_depth(env: Env) -> u32 {
+        env.storage().instance().get(&StorageKey::MaxDelegationDepth).unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH)
+    }
+
+    pub fn set_max_delegation_depth(env: Env, max_depth: u32) -> Result<(), GovernanceError> {
+        let iln_contract: Address = env.storage().instance().get(&StorageKey::IlnContract).unwrap();
+        iln_contract.require_auth();
+        let old_value: u32 = Self::get_max_delegation_depth(env.clone());
+        env.storage().instance().set(&StorageKey::MaxDelegationDepth, &max_depth);
+        env.events().publish((Symbol::new(&env, "max_delegation_depth_updated"),), (old_value, max_depth));
+        Ok(())
     }
 
     /// Returns the configured governance token total supply used for quorum
@@ -677,11 +694,12 @@ impl GovContract {
         // ── Cycle detection ───────────────────────────────────────
         // Walk the forward chain from `delegate`.
         // If we reach `delegator` at any point, the new edge would close a cycle.
+        let max_depth = Self::get_max_delegation_depth(env.clone());
         let mut cursor: Option<Address> = Self::get_delegate_raw(&env, &delegate);
         let mut depth = 0u32;
         while let Some(ref next) = cursor.clone() {
-            if depth >= MAX_DELEGATION_DEPTH {
-                break;
+            if depth >= max_depth {
+                return Err(GovernanceError::MaxDelegationDepthExceeded);
             }
             if *next == delegator {
                 return Err(GovernanceError::DelegationCyclePrevented);
@@ -1347,10 +1365,11 @@ impl GovContract {
 
     /// Walk forward pointers to find the terminal node (one with no further delegate).
     fn resolve_terminal(env: &Env, start: &Address) -> Address {
+        let max_depth = env.storage().instance().get(&StorageKey::MaxDelegationDepth).unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH);
         let mut current = start.clone();
         let mut depth = 0u32;
         loop {
-            if depth >= MAX_DELEGATION_DEPTH {
+            if depth >= max_depth {
                 break;
             }
             match Self::get_delegate_raw(env, &current) {
