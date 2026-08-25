@@ -129,10 +129,8 @@ export class RetryQueue {
     if (!log) return;
 
     const nextAttempt = log.attempts + 1;
-    const nextRetryAt =
-      nextAttempt < log.maxAttempts
-        ? now + (RETRY_DELAYS_MS[log.attempts] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1])
-        : now;
+    const delay = RETRY_DELAYS_MS[log.attempts] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1] ?? 30000;
+    const nextRetryAt = nextAttempt < log.maxAttempts ? now + delay : now;
 
     const newStatus = nextAttempt >= log.maxAttempts ? 'failed' : 'pending';
 

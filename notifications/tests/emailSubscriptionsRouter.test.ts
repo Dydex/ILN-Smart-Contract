@@ -162,6 +162,11 @@ describe('email subscriptions router', () => {
     const subscription = store.get(createRes.body.id);
     expect(subscription?.status).toBe('active');
     expect(subscription?.consentAt).toBe(currentTime());
+
+    // Single-use token replay should be rejected
+    const replayRes = await request(app).get('/subscriptions/verify').query({ token: verifyToken });
+    expect(replayRes.status).toBe(400);
+    expect(replayRes.body.error).toBe('invalid_token');
   });
 
   it('returns 404 when a verification token references a missing subscription', async () => {

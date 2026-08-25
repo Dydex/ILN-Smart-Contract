@@ -23,9 +23,9 @@ const VALID_EVENTS = new Set([
 export interface EmailSubscriptionRouterOptions {
   tokenSecret: string;
   publicUrl: string;
-  now?: () => number;
-  verificationTtlMs?: number;
-  unsubscribeTtlMs?: number;
+  now?: (() => number) | undefined;
+  verificationTtlMs?: number | undefined;
+  unsubscribeTtlMs?: number | undefined;
 }
 
 export function createEmailSubscriptionsRouter(
@@ -121,7 +121,7 @@ export function createEmailSubscriptionsRouter(
       return;
     }
 
-    const payload = tokenService.verify(token);
+    const payload = tokenService.consume(token);
     if (!payload || payload.purpose !== 'verify') {
       res.status(400).json({ error: 'invalid_token' });
       return;

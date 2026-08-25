@@ -15,27 +15,46 @@ export interface EmailDetail {
 }
 
 export interface RenderInvoiceEmailOptions {
-  eyebrow?: string;
+  eyebrow?: string | undefined;
   heading: string;
   summaryLines: string[];
   details: EmailDetail[];
   unsubscribeUrl: string;
-  action?: EmailAction;
+  action?: EmailAction | undefined;
 }
 
 const DEFAULT_FONT =
   'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 
 export function escapeHtml(value: string): string {
-  return value
+  if (value === undefined || value === null) return '';
+  return String(value)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 export function escapeAttribute(value: string): string {
   return escapeHtml(value);
+}
+
+export function sanitizeHeader(value: string): string {
+  if (!value) return '';
+  return String(value).replace(/[\r\n]+/g, ' ').trim();
+}
+
+export function sanitizeUrl(url: string): string {
+  if (!url || typeof url !== 'string') return '#';
+  const trimmed = url.trim().replace(/[\r\n\t]+/g, '');
+  if (/^(?:javascript|data|vbscript):/i.test(trimmed)) {
+    return '#';
+  }
+  if (/^https?:\/\//i.test(trimmed) || /^\//.test(trimmed)) {
+    return trimmed;
+  }
+  return '#';
 }
 
 export function formatAmount(amount: string, token: string): string {
@@ -77,11 +96,12 @@ export function renderInvoiceEmail(options: RenderInvoiceEmailOptions): EmailCon
     )
     .join('');
 
+  const safeActionUrl = options.action ? sanitizeUrl(options.action.url) : '';
   const actionHtml = options.action
     ? `
       <p style="margin: 28px 0 0;">
         <a
-          href="${escapeAttribute(options.action.url)}"
+          href="${escapeAttribute(safeActionUrl)}"
           style="display: inline-block; background: #111827; color: #ffffff; text-decoration: none; font-weight: 600; padding: 12px 18px; border-radius: 999px;"
         >
           ${escapeHtml(options.action.label)}
@@ -89,6 +109,8 @@ export function renderInvoiceEmail(options: RenderInvoiceEmailOptions): EmailCon
       </p>
     `
     : '';
+
+  const safeUnsubscribeUrl = sanitizeUrl(options.unsubscribeUrl);
 
   const html = `<!doctype html>
 <html lang="en">
@@ -108,7 +130,7 @@ export function renderInvoiceEmail(options: RenderInvoiceEmailOptions): EmailCon
           ${actionHtml}
           <p style="margin: 28px 0 0; font-size: 12px; line-height: 1.6; color: #6b7280;">
             If you no longer want these updates, you can
-            <a href="${escapeAttribute(options.unsubscribeUrl)}" style="color: #111827; font-weight: 600;">unsubscribe here</a>.
+            <a href="${escapeAttribute(safeUnsubscribeUrl)}" style="color: #111827; font-weight: 600;">unsubscribe here</a>.
           </p>
         </div>
       </div>
@@ -117,7 +139,7 @@ export function renderInvoiceEmail(options: RenderInvoiceEmailOptions): EmailCon
 </html>`;
 
   const textLines = [
-    options.heading,
+    sanitizeHeader(options.heading),
     '',
     ...options.summaryLines,
     '',
@@ -125,13 +147,13 @@ export function renderInvoiceEmail(options: RenderInvoiceEmailOptions): EmailCon
   ];
 
   if (options.action) {
-    textLines.push('', `${options.action.label}: ${options.action.url}`);
+    textLines.push('', `${options.action.label}: ${safeActionUrl}`);
   }
 
-  textLines.push('', `Unsubscribe: ${options.unsubscribeUrl}`);
+  textLines.push('', `Unsubscribe: ${safeUnsubscribeUrl}`);
 
   return {
-    subject: options.heading,
+    subject: sanitizeHeader(options.heading),
     html,
     text: textLines.join('\n'),
   };

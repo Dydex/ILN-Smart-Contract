@@ -1,7 +1,7 @@
 export interface RateLimiterOptions {
-  maxRequests?: number;
-  windowMs?: number;
-  now?: () => number;
+  maxRequests?: number | undefined;
+  windowMs?: number | undefined;
+  now?: (() => number) | undefined;
 }
 
 const DEFAULT_MAX = 1000;

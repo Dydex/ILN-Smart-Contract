@@ -6,10 +6,10 @@ export interface InvoiceEmailBaseInput {
   amount: string;
   dueDate: number;
   recipientAddress: string;
-  freelancer?: string;
-  payer?: string;
-  funder?: string;
-  invoiceUrl?: string;
+  freelancer?: string | undefined;
+  payer?: string | undefined;
+  funder?: string | undefined;
+  invoiceUrl?: string | undefined;
   unsubscribeUrl: string;
 }
 

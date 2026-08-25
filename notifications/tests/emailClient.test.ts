@@ -121,4 +121,31 @@ describe('createEmailClient', () => {
       'RESEND_API_KEY is not set; skipping real email delivery to user@example.com',
     );
   });
+
+  it('sanitizes CRLF characters from email headers before sending', async () => {
+    resendMocks.send.mockResolvedValueOnce({
+      data: { id: 'email_crlf_safe' },
+      error: null,
+    });
+
+    const client = createEmailClient({
+      apiKey: 're_test_key',
+      from: 'ILN Notifications <noreply@iln.dev>\r\nBcc: evil@attacker.com',
+      logger: console,
+    });
+
+    await client.send({
+      to: 'user@example.com\r\nCc: victim@example.com',
+      subject: 'Invoice Paid\r\nSubject: Overridden',
+      html: '<p>Hi</p>',
+    });
+
+    expect(resendMocks.send).toHaveBeenCalledWith({
+      from: 'ILN Notifications <noreply@iln.dev> Bcc: evil@attacker.com',
+      to: 'user@example.com Cc: victim@example.com',
+      subject: 'Invoice Paid Subject: Overridden',
+      html: '<p>Hi</p>',
+      text: undefined,
+    });
+  });
 });
