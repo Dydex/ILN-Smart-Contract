@@ -28,6 +28,10 @@ struct MockRegistryOracle;
 
 #[contractimpl]
 impl MockRegistryOracle {
+    pub fn interface_version(_env: Env) -> u32 {
+        crate::oracle_interface::ORACLE_INTERFACE_VERSION
+    }
+
     pub fn set_response(env: Env, verified: bool, ts: u32) {
         env.storage()
             .instance()
@@ -480,11 +484,12 @@ fn test_register_token_oracle_unauthorized_caller() {
 
 #[test]
 fn test_remove_oracle_unauthorized_caller() {
-    let (env, admin, _, client) = setup_env_no_mock_auths();
-    let oracle = Address::generate(&env);
+    let (env, _admin, _, client) = setup_env_no_mock_auths();
 
     env.mock_all_auths();
-    client.register_oracle(&OracleFeedType::Price, &oracle);
+    let oracle_id = env.register_contract(None, MockRegistryOracle);
+    MockRegistryOracleClient::new(&env, &oracle_id).set_response(&true, &env.ledger().sequence());
+    client.register_oracle(&OracleFeedType::Price, &oracle_id);
 
     let imposter = Address::generate(&env);
     env.mock_auths(&[MockAuth {
@@ -502,5 +507,55 @@ fn test_remove_oracle_unauthorized_caller() {
         res.is_err(),
         "remove_oracle should fail for non-admin caller"
     );
-    let _ = admin;
+}
+
+#[test]
+fn test_register_oracle_accepts_compatible_interface_version() {
+    let t = setup();
+    let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    let result = t
+        .contract
+        .try_register_oracle(&OracleFeedType::Identity, &oracle);
+    assert!(result.is_ok(), "compatible oracle version must be accepted");
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(oracle)
+    );
+}
+
+#[contract]
+struct IncompatibleVersionOracle;
+
+#[contractimpl]
+impl IncompatibleVersionOracle {
+    pub fn interface_version(_env: Env) -> u32 {
+        999
+    }
+
+    pub fn get_payer_data(env: Env, _payer: Address) -> OracleVerificationResponse {
+        OracleVerificationResponse {
+            is_verified: true,
+            timestamp: env.ledger().sequence(),
+        }
+    }
+}
+
+#[test]
+fn test_register_oracle_rejects_incompatible_interface_version() {
+    let t = setup();
+    let oracle = t.env.register_contract(None, IncompatibleVersionOracle);
+    let result = t
+        .contract
+        .try_register_oracle(&OracleFeedType::Identity, &oracle);
+    assert_eq!(
+        result.err(),
+        Some(Ok(ContractError::IncompatibleInterfaceVersion))
+    );
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        None,
+        "incompatible oracle must not be persisted"
+    );
 }

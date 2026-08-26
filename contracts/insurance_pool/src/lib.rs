@@ -21,7 +21,9 @@ mod insurance_interface;
 #[cfg(test)]
 mod test;
 
-pub use insurance_interface::{InsurancePoolInterface, InsurancePoolInterfaceClient};
+pub use insurance_interface::{
+    InsurancePoolInterface, InsurancePoolInterfaceClient, INSURANCE_INTERFACE_VERSION,
+};
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
@@ -542,6 +544,10 @@ impl InsurancePool {
 
 #[contractimpl]
 impl InsurancePoolInterface for InsurancePool {
+    fn interface_version(_env: Env) -> u32 {
+        crate::insurance_interface::INSURANCE_INTERFACE_VERSION
+    }
+
     fn enroll(env: Env, lp: Address) {
         lp.require_auth();
         env.storage()
