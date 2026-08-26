@@ -6,6 +6,6 @@
     "rootDir": ".",
     "isolatedModules": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*", "scripts/**/*"],
+  "exclude": ["node_modules", "dist", "backups", "restored"]
 }

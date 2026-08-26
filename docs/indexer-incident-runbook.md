@@ -21,8 +21,9 @@ When data-loss or corruption is confirmed, choose the recovery path based on the
 
 **Procedure**:
 1. Pause the indexer service to prevent further writes.
-2. Restore the Postgres database from the latest RDS/volume snapshot.
-3. Resume the indexer. It will automatically catch up from the restored ledger sequence.
+2. Restore the indexer's SQLite database from the latest backup archive (see [Indexer Operations Guide](indexer-operations.md) §3 — checksum verification and integrity checks are part of the restore script).
+3. Verify the API serves correct data (`tsx indexer/scripts/verify-restore.ts --db <restored path>`).
+4. Resume the indexer. It will automatically catch up from the restored ledger cursor.
 
 ### Option B: Replay from Checkpoint (Selective Resync)
 **Criteria**:
