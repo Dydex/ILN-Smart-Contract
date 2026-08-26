@@ -8,14 +8,18 @@
 //! This trait is intentionally minimal and design-forward. It is consumed by:
 //!   * the [`InsurancePool`](crate::InsurancePool) stub contract in this crate,
 //!     which provides a correct-but-simplified implementation, and
-//!   * the main `invoice_liquidity` contract, which (in a follow-up) invokes
+//!   * the main `invoice_liquidity` contract, which invokes
 //!     [`claim`](InsurancePoolInterface::claim) from its default-handling path
-//!     via the generated [`InsurancePoolClient`].
+//!     via the generated [`InsurancePoolInterfaceClient`].
 //!
 //! The full risk/pricing model (premium curves, coverage caps, payout
 //! priority) is deliberately out of scope here and tracked as a follow-up.
 
 use soroban_sdk::{contractclient, Address, Env};
+
+/// Interface version expected by `invoice_liquidity` when configuring a pool.
+/// Bump this (and the implementing contract) together on breaking changes.
+pub const INSURANCE_INTERFACE_VERSION: u32 = 1;
 
 /// The default-protection insurance pool interface.
 ///
@@ -25,6 +29,10 @@ use soroban_sdk::{contractclient, Address, Env};
 /// generated as `InsurancePoolClient` by `#[contractimpl]`.)
 #[contractclient(name = "InsurancePoolInterfaceClient")]
 pub trait InsurancePoolInterface {
+    /// Returns [`INSURANCE_INTERFACE_VERSION`]. Callers should reject
+    /// configuration of a pool that reports a different value.
+    fn interface_version(env: Env) -> u32;
+
     /// Enroll `lp` into the insurance program so future defaults on invoices
     /// they fund become eligible for compensation. Requires `lp` auth.
     fn enroll(env: Env, lp: Address);

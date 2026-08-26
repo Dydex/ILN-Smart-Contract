@@ -80,6 +80,11 @@ pub enum DataKey {
     /// Issue #529: deployed insurance pool contract address, consulted by
     /// claim_default() to compensate enrolled LPs on a confirmed default.
     InsurancePool,
+    /// Cached insurance pool interface version verified at configuration time.
+    InsurancePoolInterfaceVersion,
+    /// Cached oracle interface version verified at register_oracle time,
+    /// keyed by feed type.
+    OracleInterfaceVersion(crate::oracle_registry::OracleFeedType),
 }
 
 // ----------------------------------------------------------------
@@ -109,6 +114,37 @@ pub fn get_insurance_pool(env: &Env) -> Option<Address> {
 
 pub fn set_insurance_pool(env: &Env, pool: &Address) {
     env.storage().instance().set(&DataKey::InsurancePool, pool);
+}
+
+pub fn set_insurance_pool_interface_version(env: &Env, version: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::InsurancePoolInterfaceVersion, &version);
+}
+
+pub fn get_insurance_pool_interface_version(env: &Env) -> Option<u32> {
+    env.storage()
+        .instance()
+        .get(&DataKey::InsurancePoolInterfaceVersion)
+}
+
+pub fn set_oracle_interface_version(
+    env: &Env,
+    feed_type: crate::oracle_registry::OracleFeedType,
+    version: u32,
+) {
+    env.storage()
+        .instance()
+        .set(&DataKey::OracleInterfaceVersion(feed_type), &version);
+}
+
+pub fn get_oracle_interface_version(
+    env: &Env,
+    feed_type: crate::oracle_registry::OracleFeedType,
+) -> Option<u32> {
+    env.storage()
+        .instance()
+        .get(&DataKey::OracleInterfaceVersion(feed_type))
 }
 
 pub fn is_paused(env: &Env) -> bool {
