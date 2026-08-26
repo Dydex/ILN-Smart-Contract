@@ -25,6 +25,7 @@ use soroban_sdk::{contracttype, vec, Address, Env, IntoVal, Symbol};
 use crate::access::require_admin;
 use crate::errors::ContractError;
 use crate::events::{OracleHealthRecorded, OracleRegistered, OracleUnregistered};
+use crate::oracle_interface::{OracleClient, ORACLE_INTERFACE_VERSION};
 use crate::storage::DataKey;
 use crate::OracleVerificationResponse;
 
@@ -69,15 +70,19 @@ pub struct OracleHealthStatus {
 /// Access: Admin only (in production, the ILN contract's stored admin is set
 /// to the governance contract's address, so this is effectively
 /// governance-controlled via a proposal).
+///
+/// Rejects oracles that do not report a compatible [`ORACLE_INTERFACE_VERSION`].
 pub fn register_oracle(
     env: &Env,
     feed_type: OracleFeedType,
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    let version = verify_oracle_interface_version(env, &oracle)?;
     env.storage()
         .instance()
         .set(&DataKey::OracleRegistry(feed_type), &oracle);
+    crate::storage::set_oracle_interface_version(env, feed_type, version);
     env.events().publish(
         (
             soroban_sdk::Symbol::new(env, "oracle_registered"),
@@ -116,6 +121,8 @@ pub fn remove_oracle(env: &Env, feed_type: OracleFeedType) -> Result<(), Contrac
 /// this exact token.
 ///
 /// Access: Admin only.
+///
+/// Rejects oracles that do not report a compatible [`ORACLE_INTERFACE_VERSION`].
 pub fn register_token_oracle(
     env: &Env,
     feed_type: OracleFeedType,
@@ -123,9 +130,11 @@ pub fn register_token_oracle(
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    let version = verify_oracle_interface_version(env, &oracle)?;
     env.storage()
         .persistent()
         .set(&DataKey::TokenOracle(feed_type, token.clone()), &oracle);
+    crate::storage::set_oracle_interface_version(env, feed_type, version);
     env.events().publish(
         (
             soroban_sdk::Symbol::new(env, "oracle_registered"),
@@ -302,4 +311,18 @@ pub fn check_oracle_health(
     env.storage()
         .persistent()
         .get(&DataKey::OracleHealth(feed_type, token))
+}
+
+/// Query `oracle.interface_version()` and reject incompatible / missing
+/// implementations before persisting a registry entry.
+fn verify_oracle_interface_version(env: &Env, oracle: &Address) -> Result<u32, ContractError> {
+    let client = OracleClient::new(env, oracle);
+    let version = match client.try_interface_version() {
+        Ok(Ok(v)) => v,
+        _ => return Err(ContractError::IncompatibleInterfaceVersion),
+    };
+    if version != ORACLE_INTERFACE_VERSION {
+        return Err(ContractError::IncompatibleInterfaceVersion);
+    }
+    Ok(version)
 }

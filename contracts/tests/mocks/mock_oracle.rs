@@ -57,6 +57,10 @@ impl MockOracle {
     ///
     /// Matches `OracleInterface::get_verification`.
     /// Panics if `set_should_panic()` was armed, clearing the flag first.
+    pub fn interface_version(_env: Env) -> u32 {
+        1
+    }
+
     pub fn get_verification(env: Env, payer: Address) -> VerificationResult {
         if env
             .storage()

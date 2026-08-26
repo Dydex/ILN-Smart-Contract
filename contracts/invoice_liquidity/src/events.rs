@@ -47,6 +47,17 @@ pub struct InsuranceClaimAttempted {
     pub payout: i128,
 }
 
+/// Emitted when an enrolled LP's insurance `claim()` call fails (panic, error,
+/// or incompatible pool) so operators can observe compensation failure
+/// without the core default path reverting.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InsuranceCompensationFailed {
+    pub invoice_id: u64,
+    pub lp: Address,
+    pub pool: Address,
+}
+
 /// Emitted when governance adds a token to the funding allowlist (Issue #19).
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]

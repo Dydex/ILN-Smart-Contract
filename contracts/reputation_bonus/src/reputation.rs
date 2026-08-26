@@ -1,3 +1,13 @@
+//! Independent reputation counters for the `reputation_bonus` module only.
+//!
+//! **Source of truth:** this crate's persistent `ReputationKey` map — *not*
+//! `invoice_liquidity`'s `ReputationProfile` / payer scores.
+//!
+//! The two contracts never sync. Scores for the same address may diverge.
+//! Protocol funding / default logic must read ILN reputation; this module's
+//! scores apply only to invoices submitted via `reputation_bonus`.
+//! See `docs/adr/ADR-011-reputation-state-source-of-truth.md`.
+
 use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol};
 
 #[contracttype]

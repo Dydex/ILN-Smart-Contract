@@ -64,4 +64,7 @@ pub enum ContractError {
     /// attacks where an attacker races to resolve the queue immediately after a
     /// high-reputation LP joins (Issue #MEV-1).
     QueueNotMature = 39,
+    /// Cross-contract dependency reported an incompatible interface version
+    /// (or the version query failed) during configuration.
+    IncompatibleInterfaceVersion = 40,
 }

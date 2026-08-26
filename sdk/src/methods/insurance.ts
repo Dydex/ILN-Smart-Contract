@@ -581,3 +581,229 @@ export async function getInsurancePremiums(
 ): Promise<bigint> {
   return getPremiumsPaid(server, contractId, lpAddress, networkPassphrase);
 }
+
+/**
+ * Check if a claim has already been processed for an invoice.
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param invoiceId           - The invoice ID to check
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns True if claimed, false otherwise
+ */
+export async function isInsuranceClaimed(
+  server: SorobanRpc.Server,
+  contractId: string,
+  invoiceId: bigint,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<boolean> {
+  validateContractId(contractId);
+  const retval = await simulateCall(
+    server,
+    contractId,
+    "is_claimed",
+    [nativeToScVal(invoiceId, { type: "u64" })],
+    networkPassphrase
+  );
+  if (!retval) {
+    return false;
+  }
+  return scValToNative(retval) as boolean;
+}
+
+/**
+ * Get the base premium rate in basis points.
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns The base premium rate in basis points (e.g., 500 = 5%)
+ */
+export async function getBasePremiumRateBps(
+  server: SorobanRpc.Server,
+  contractId: string,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<number> {
+  validateContractId(contractId);
+  const retval = await simulateCall(server, contractId, "get_base_premium_rate_bps", [], networkPassphrase);
+  if (!retval) {
+    return 0;
+  }
+  return scValToNative(retval) as number;
+}
+
+/**
+ * Get the default count for an LP (number of defaults).
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param lpAddress           - The LP's Stellar G... address
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns The default count for the LP
+ */
+export async function getDefaultCount(
+  server: SorobanRpc.Server,
+  contractId: string,
+  lpAddress: string,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<number> {
+  validateContractId(contractId);
+  validateGAddress(lpAddress);
+  const retval = await simulateCall(
+    server,
+    contractId,
+    "get_default_count",
+    [new Address(lpAddress).toScVal()],
+    networkPassphrase
+  );
+  if (!retval) {
+    return 0;
+  }
+  return scValToNative(retval) as number;
+}
+
+/**
+ * Calculate the premium rate in basis points for an LP (includes risk multiplier).
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param lpAddress           - The LP's Stellar G... address
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns The calculated premium rate in basis points
+ */
+export async function calculateInsurancePremiumRateBps(
+  server: SorobanRpc.Server,
+  contractId: string,
+  lpAddress: string,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<number> {
+  validateContractId(contractId);
+  validateGAddress(lpAddress);
+  const retval = await simulateCall(
+    server,
+    contractId,
+    "calculate_premium_rate_bps",
+    [new Address(lpAddress).toScVal()],
+    networkPassphrase
+  );
+  if (!retval) {
+    return 0;
+  }
+  return scValToNative(retval) as number;
+}
+
+/**
+ * Calculate the premium amount for an LP on a given invoice amount.
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param lpAddress           - The LP's Stellar G... address
+ * @param invoiceAmount       - The invoice amount to calculate premium for
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns The calculated premium amount
+ */
+export async function calculateInsurancePremiumAmount(
+  server: SorobanRpc.Server,
+  contractId: string,
+  lpAddress: string,
+  invoiceAmount: bigint,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<bigint> {
+  validateContractId(contractId);
+  validateGAddress(lpAddress);
+  const retval = await simulateCall(
+    server,
+    contractId,
+    "calculate_premium_amount",
+    [new Address(lpAddress).toScVal(), nativeToScVal(invoiceAmount, { type: "i128" })],
+    networkPassphrase
+  );
+  if (!retval) {
+    return 0n;
+  }
+  return scValToNative(retval) as bigint;
+}
+
+/**
+ * Get the tiered coverage amount for an LP based on their premium history.
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param lpAddress           - The LP's Stellar G... address
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns The tiered coverage amount as a bigint
+ */
+export async function getInsuranceTieredCoverage(
+  server: SorobanRpc.Server,
+  contractId: string,
+  lpAddress: string,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<bigint> {
+  validateContractId(contractId);
+  validateGAddress(lpAddress);
+  const retval = await simulateCall(
+    server,
+    contractId,
+    "get_tiered_coverage",
+    [new Address(lpAddress).toScVal()],
+    networkPassphrase
+  );
+  if (!retval) {
+    return 0n;
+  }
+  return scValToNative(retval) as bigint;
+}
+
+/**
+ * Get the optional balance cap on the insurance pool.
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns The balance cap as bigint if set, null if no cap
+ */
+export async function getInsuranceBalanceCap(
+  server: SorobanRpc.Server,
+  contractId: string,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<bigint | null> {
+  validateContractId(contractId);
+  const retval = await simulateCall(server, contractId, "get_balance_cap", [], networkPassphrase);
+  if (!retval) {
+    return null;
+  }
+  const val = scValToNative(retval);
+  return val !== null ? (val as bigint) : null;
+}
+
+/**
+ * Set the base premium rate via governance.
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param rateBps             - New premium rate in basis points
+ * @param sourceAccount       - The governance/admin account
+ * @param signTransaction     - Function to sign the assembled transaction
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns The submitted transaction hash
+ */
+export async function setBasePremiumRateViaGovernance(
+  server: SorobanRpc.Server,
+  contractId: string,
+  rateBps: number,
+  sourceAccount: Account,
+  signTransaction: (tx: Transaction) => Promise<Transaction> | Transaction,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<{ txHash: string }> {
+  validateContractId(contractId);
+  const { txHash } = await submitCall(
+    server,
+    contractId,
+    "set_premium_rate_via_governance",
+    [nativeToScVal(rateBps, { type: "u32" })],
+    sourceAccount,
+    signTransaction,
+    networkPassphrase
+  );
+  return { txHash };
+}

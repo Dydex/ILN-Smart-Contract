@@ -163,11 +163,15 @@ pub struct ReputationScore {
 
 /// Detailed reputation profile for an address (Issue #26).
 ///
-/// Foundational data model for the reputation system. The existing
-/// [`ReputationScore`] holds the lightweight decaying score used by the
-/// payer/LP scoring path; this profile records the richer counters that future
-/// reputation logic builds on. Unknown addresses resolve to a zeroed profile
-/// (see [`get_reputation`]) rather than panicking.
+/// **Protocol source of truth** for ILN reputation counters used by funding
+/// gates, defaults, and appeals. This is independent of the
+/// `reputation_bonus` crate's own `ReputationScore` storage — the two never
+/// sync (see `docs/adr/ADR-011-reputation-state-source-of-truth.md`).
+///
+/// The lightweight [`ReputationScore`] holds the decaying score used by the
+/// payer/LP scoring path; this profile records the richer counters. Unknown
+/// addresses resolve to a zeroed profile (see [`get_reputation`]) rather than
+/// panicking.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReputationProfile {

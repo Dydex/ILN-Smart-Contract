@@ -82,8 +82,40 @@ describe('websocket endpoint', () => {
     await new Promise((r) => setTimeout(r, 400));
     expect(endpoint.connectionCount()).toBe(0);
   });
-});
 
+  it('rejects connections over maxConnectionsPerIp', async () => {
+    const clients: WebSocket[] = [];
+    let rejected = false;
+
+    for (let i = 0; i < 6; i++) {
+      const client = new WebSocket(`ws://localhost:${port}/events`);
+      clients.push(client);
+
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        client.on('open', done);
+        client.on('close', (code, reason) => {
+          if (code === 1013 && reason.toString() === 'max_connections_per_ip') {
+            rejected = true;
+          }
+          done();
+        });
+        client.on('error', done);
+      });
+    }
+
+    // Give the server a tick to finish closing the over-limit socket.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(rejected).toBe(true);
+    for (const c of clients) c.close();
+  });
+});
 describe('filter helpers', () => {
   it('normalizeFilter strips invalid types', () => {
     const f = normalizeFilter({ types: ['A', 1, 'B'], address: 'G1' });
@@ -99,25 +131,3 @@ describe('filter helpers', () => {
     expect(matchesFilter({ type: 'X' }, { types: ['Y'] })).toBe(false);
   });
 });
-
-  it('rejects connections over maxConnectionsPerIp', async () => {
-    const clients = [];
-    let rejected = false;
-    for (let i = 0; i < 6; i++) {
-      const client = new WebSocket(`ws://localhost:${port}/events`);
-      clients.push(client);
-      
-      const p = new Promise<void>((resolve) => {
-        client.on('open', resolve);
-        client.on('close', (code, reason) => {
-          if (code === 1013 && reason.toString() === 'max_connections_per_ip') {
-            rejected = true;
-          }
-          resolve();
-        });
-      });
-      await p;
-    }
-    expect(rejected).toBe(true);
-    for (const c of clients) c.close();
-  });

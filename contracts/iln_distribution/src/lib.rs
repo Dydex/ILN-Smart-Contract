@@ -13,6 +13,10 @@ const DEFAULT_LP_REWARD_RATE: i128 = 10_000_000;
 const DEFAULT_FREELANCER_REWARD_RATE: i128 = HALF_TOKEN;
 /// Default payer reward rate: 5,000,000 stroops per on-time settlement.
 const DEFAULT_PAYER_REWARD_RATE: i128 = HALF_TOKEN;
+/// Defense-in-depth ceiling for a single `accrue_lp` call (~1,000,000 USDC
+/// at 7-decimal stroops). Prevents a compromised/misconfigured ILN from
+/// accruing absurd volumes in one invocation.
+pub const MAX_LP_ACCRUAL_PER_CALL: i128 = 10_000_000_000_000; // 1e13
 
 #[contracttype]
 pub enum StorageKey {
@@ -115,7 +119,10 @@ impl IlnDistribution {
     pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
         Self::require_iln_invoker(&env);
 
-        if amount_usdc_equivalent <= 0 {
+        // Defense-in-depth: ignore non-positive and absurdly large settlements
+        // rather than trusting upstream blindly (even though ILN is the sole
+        // intended caller).
+        if amount_usdc_equivalent <= 0 || amount_usdc_equivalent > MAX_LP_ACCRUAL_PER_CALL {
             return;
         }
 
@@ -555,5 +562,55 @@ mod test {
         let claimed = dist.claim_tokens(&lp);
         assert_eq!(claimed, 20_000_000);
         assert_eq!(token_client.balance(&lp), 20_000_000);
+    }
+
+    #[test]
+    fn accrue_lp_rejects_negative_and_zero_amounts() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+        let iln = MockIlnClient::new(&env, &iln_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        let lp = Address::generate(&env);
+        iln.accrue_lp(&dist_id, &lp, &0);
+        iln.accrue_lp(&dist_id, &lp, &-1);
+        iln.accrue_lp(&dist_id, &lp, &i128::MIN);
+
+        assert_eq!(dist.get_accrual(&lp), 0);
+        assert_eq!(dist.claim_tokens(&lp), 0);
+    }
+
+    #[test]
+    fn accrue_lp_rejects_amounts_above_sanity_ceiling() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+        let iln = MockIlnClient::new(&env, &iln_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        let lp = Address::generate(&env);
+        // Just over the ceiling and i128::MAX must not inflate accrual.
+        iln.accrue_lp(&dist_id, &lp, &(MAX_LP_ACCRUAL_PER_CALL + 1));
+        iln.accrue_lp(&dist_id, &lp, &i128::MAX);
+        assert_eq!(dist.get_accrual(&lp), 0);
+
+        // Boundary: exact ceiling is accepted.
+        iln.accrue_lp(&dist_id, &lp, &MAX_LP_ACCRUAL_PER_CALL);
+        let expected_units = MAX_LP_ACCRUAL_PER_CALL / HUNDRED_USDC_STROOPS;
+        assert_eq!(
+            dist.get_accrual(&lp),
+            expected_units.saturating_mul(DEFAULT_LP_REWARD_RATE)
+        );
     }
 }

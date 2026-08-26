@@ -8,6 +8,10 @@
 
 use soroban_sdk::{contractclient, contracttype, Address, Env};
 
+/// Interface version expected by `invoice_liquidity` when registering an
+/// oracle. Bump together with implementing contracts on breaking changes.
+pub const ORACLE_INTERFACE_VERSION: u32 = 1;
+
 /// Verification record returned by the oracle.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -20,10 +24,14 @@ pub struct VerificationResult {
 
 /// Cross-contract client trait for a payer-verification oracle.
 ///
-/// Any contract registered as the ILN payer oracle must expose these two
-/// entry-points with exactly these signatures.
+/// Any contract registered as the ILN payer oracle must expose these
+/// entry-points with exactly these signatures, including
+/// [`interface_version`](OracleInterface::interface_version).
 #[contractclient(name = "OracleClient")]
 pub trait OracleInterface {
+    /// Returns [`ORACLE_INTERFACE_VERSION`].
+    fn interface_version(env: Env) -> u32;
+
     /// Returns the verification record for `payer`.
     fn get_verification(env: Env, payer: Address) -> VerificationResult;
 

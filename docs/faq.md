@@ -71,7 +71,7 @@ If the delivered work is unsatisfactory, payers or freelancers can trigger a dis
 Payers call the `mark_paid` function on the `invoice_liquidity` contract, transferring the required tokens (e.g., USDC) into the escrow, which then automatically routes them to the LP. An example script for this is provided in the [First Invoice Tutorial](tutorials/first-invoice.md).
 
 ### 19. Does paying early improve my reputation score?
-Yes, consistent and early payments positively impact your payer reputation score. This metric is tracked by the `reputation_bonus` contract and benefits your associated freelancers. Discover the exact weighting in the [Reputation Model](reputation-model.md).
+Yes, consistent and early payments positively impact your payer reputation score. Protocol reputation is tracked by `invoice_liquidity` (the source of truth for funding gates, defaults, and appeals). The separate `reputation_bonus` contract maintains its own counters only for invoices submitted through that module — the two stores are intentionally independent (see [ADR-011](adr/ADR-011-reputation-state-source-of-truth.md)). Discover the exact weighting in the [Reputation Model](reputation-model.md).
 
 ### 20. Do I need to hold crypto to pay an invoice?
 Currently, payments must be made using supported Stellar network tokens (such as USDC or XLM). However, many ecosystem wallets and anchors provide seamless fiat on-ramps to convert traditional currency to USDC instantly. Check the [Multi-Token Support](multi-token.md) guide for details.

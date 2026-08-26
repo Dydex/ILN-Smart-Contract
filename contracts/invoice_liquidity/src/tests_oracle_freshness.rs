@@ -44,6 +44,10 @@ impl MockTimestampedOracle {
 
     /// Return verified=true with the timestamp that was passed at registration.
     /// In tests we use the args Vec to inject the timestamp value.
+    pub fn interface_version(_env: Env) -> u32 {
+        crate::oracle_interface::ORACLE_INTERFACE_VERSION
+    }
+
     pub fn get_payer_data(env: Env, _payer: Address) -> OracleVerificationResponse {
         // Read the timestamp from instance storage (set via a helper below).
         let ts: u32 = env

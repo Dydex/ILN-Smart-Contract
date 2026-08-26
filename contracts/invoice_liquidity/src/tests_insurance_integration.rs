@@ -19,7 +19,11 @@
 use super::*;
 use crate::test::setup;
 use insurance_pool::{InsurancePool, InsurancePoolClient};
-use soroban_sdk::testutils::{Events as _, Ledger};
+use soroban_sdk::{
+    contract, contracterror, contractimpl,
+    testutils::{Address as _, Events as _, Ledger},
+    Address, Env,
+};
 
 const INVOICE_AMOUNT: i128 = 1_000_000_000;
 const DISCOUNT_RATE: u32 = 300;
@@ -75,6 +79,52 @@ fn make_defaultable_invoice(t: &crate::test::TestEnv) -> u64 {
     t.env.ledger().set(info);
 
     id
+}
+
+/// Mock pool that reports enrollment but fails every `claim()` with a
+/// contract error — used to prove claim_default isolates insurance failures
+/// from core default logic.
+#[contract]
+struct PanicOnClaimPool;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+enum PanicPoolError {
+    ForcedFailure = 1,
+}
+
+#[contractimpl]
+impl PanicOnClaimPool {
+    pub fn interface_version(_env: Env) -> u32 {
+        insurance_pool::INSURANCE_INTERFACE_VERSION
+    }
+
+    pub fn is_enrolled(_env: Env, _lp: Address) -> bool {
+        true
+    }
+
+    pub fn claim(env: Env, _invoice_id: u64, _lp: Address) -> i128 {
+        soroban_sdk::panic_with_error!(&env, PanicPoolError::ForcedFailure);
+    }
+
+    pub fn enroll(_env: Env, _lp: Address) {}
+
+    pub fn deposit_premium(_env: Env, _lp: Address, _amount: i128) {}
+
+    pub fn get_pool_balance(_env: Env) -> i128 {
+        0
+    }
+}
+
+#[contract]
+struct IncompatibleInsurancePool;
+
+#[contractimpl]
+impl IncompatibleInsurancePool {
+    pub fn interface_version(_env: Env) -> u32 {
+        999
+    }
 }
 
 #[test]
@@ -193,4 +243,71 @@ fn test_get_insurance_pool_returns_configured_address() {
 
     let pool = deploy_pool(&t, COVERAGE_CAP);
     assert_eq!(t.contract.get_insurance_pool(), Some(pool.address));
+}
+
+#[test]
+fn test_claim_default_isolates_panicking_insurance_pool() {
+    let t = setup();
+    let score_before = t.contract.payer_score(&t.payer);
+
+    let pool_id = t.env.register_contract(None, PanicOnClaimPool);
+    advance_past_rate_limit_cooldown(&t.env);
+    t.contract.set_insurance_pool(&pool_id);
+
+    let id = make_defaultable_invoice(&t);
+    // Must complete: Defaulted status, reputation penalty, failure event —
+    // even though the pool errors on claim().
+    t.contract.claim_default(&t.funder, &id);
+
+    // Capture events immediately: events().all() only retains the last
+    // top-level invocation (get_invoice / getters would wipe these).
+    let events = t.env.events().all();
+    assert!(
+        !events.events().is_empty(),
+        "claim_default must emit events after an insurance claim failure"
+    );
+    let saw_compensation_failure = events.events().iter().any(|e| {
+        let s = std::format!("{:?}", e);
+        s.contains("insurance_compensation_failed")
+            || s.contains("InsuranceCompensationFailed")
+            || s.contains("insurance_claim_attempted")
+            || s.contains("InsuranceClaimAttempted")
+    });
+    assert!(
+        saw_compensation_failure,
+        "insurance failure path must emit InsuranceCompensationFailed / InsuranceClaimAttempted"
+    );
+
+    let invoice = t.contract.get_invoice(&id);
+    assert_eq!(invoice.status, InvoiceStatus::Defaulted);
+    assert_eq!(
+        t.contract.payer_score(&t.payer),
+        score_before.saturating_sub(5)
+    );
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_defaulted, 1);
+}
+
+#[test]
+fn test_set_insurance_pool_accepts_compatible_interface_version() {
+    let t = setup();
+    let pool_id = t.env.register_contract(None, InsurancePool);
+    let pool = InsurancePoolClient::new(&t.env, &pool_id);
+    pool.initialize(&t.contract.address, &COVERAGE_CAP, &t.token.address);
+    advance_past_rate_limit_cooldown(&t.env);
+    let result = t.contract.try_set_insurance_pool(&pool_id);
+    assert!(result.is_ok());
+    assert_eq!(t.contract.get_insurance_pool(), Some(pool_id));
+}
+
+#[test]
+fn test_set_insurance_pool_rejects_incompatible_interface_version() {
+    let t = setup();
+    let pool_id = t.env.register_contract(None, IncompatibleInsurancePool);
+    advance_past_rate_limit_cooldown(&t.env);
+    let result = t.contract.try_set_insurance_pool(&pool_id);
+    assert_eq!(
+        result.err(),
+        Some(Ok(ContractError::IncompatibleInterfaceVersion))
+    );
+    assert_eq!(t.contract.get_insurance_pool(), None);
 }
