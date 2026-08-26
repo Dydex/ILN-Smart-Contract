@@ -53,13 +53,13 @@ fn setup_queue() -> QueueTestEnv {
     let lp_c = Address::generate(&env);
 
     for lp in [&lp_a, &lp_b, &lp_c] {
-        token_admin.mint(lp, &(INVOICE_AMOUNT * 10));
+        token_admin.mint(lp, &(INVOICE_AMOUNT * 100));
     }
-    token_admin.mint(&payer, &(INVOICE_AMOUNT * 10));
+    token_admin.mint(&payer, &(INVOICE_AMOUNT * 100));
 
     let contract_id = env.register_contract(None, InvoiceLiquidityContract);
     let contract = InvoiceLiquidityContractClient::new(&env, &contract_id);
-    token_admin.mint(&contract.address, &(INVOICE_AMOUNT * 100));
+    token_admin.mint(&contract.address, &(INVOICE_AMOUNT * 1000));
 
     let xlm_admin = Address::generate(&env);
     let xlm_id = env.register_stellar_asset_contract_v2(xlm_admin);
@@ -86,7 +86,30 @@ fn setup_queue() -> QueueTestEnv {
 
 fn submit_invoice(t: &QueueTestEnv) -> u64 {
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
-    t.contract.submit_invoice(&ReferralCode::None)
+    t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due_date,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    )
+}
+
+/// Issue #MEV-1 added a maturity delay to resolve_fund_queue after these
+/// tests were written (while the file was orphaned); queue resolution in
+/// tests must advance past QUEUE_DELAY_LEDGERS first.
+fn advance_ledgers(env: &Env, delta: u32) {
+    let mut info = env.ledger().get();
+    info.sequence_number += delta;
+    info.timestamp += u64::from(delta) * 5;
+    env.ledger().set(info);
+}
+
+fn resolve_queue_mature(t: &QueueTestEnv, id: &u64) -> Address {
+    advance_ledgers(&t.env, QUEUE_DELAY_LEDGERS);
+    t.contract.resolve_fund_queue(id)
 }
 
 // ── lp_score ─────────────────────────────────────────────────────────────────
@@ -109,7 +132,7 @@ fn test_single_lp_joins_queue_successfully() {
 }
 
 #[test]
-fn test_duplicate_queue_join_rejected() {
+pub(crate) fn test_duplicate_queue_join_rejected() {
     let t = setup_queue();
     let id = submit_invoice(&t);
 
@@ -133,7 +156,7 @@ fn test_join_queue_after_resolution_rejected() {
     let id = submit_invoice(&t);
 
     t.contract.join_fund_queue(&t.lp_a, &id);
-    t.contract.resolve_fund_queue(&id);
+    resolve_queue_mature(&t, &id);
 
     // Late arrival cannot join once queue is resolved.
     let result = t.contract.try_join_fund_queue(&t.lp_b, &id);
@@ -148,7 +171,7 @@ fn test_resolve_queue_returns_only_lp_when_one_entry() {
     let id = submit_invoice(&t);
 
     t.contract.join_fund_queue(&t.lp_a, &id);
-    let winner = t.contract.resolve_fund_queue(&id);
+    let winner = resolve_queue_mature(&t, &id);
 
     assert_eq!(winner, t.lp_a);
 }
@@ -163,13 +186,13 @@ fn test_resolve_queue_empty_fails() {
 }
 
 #[test]
-fn test_resolve_queue_is_idempotent() {
+pub(crate) fn test_resolve_queue_is_idempotent() {
     let t = setup_queue();
     let id = submit_invoice(&t);
 
     t.contract.join_fund_queue(&t.lp_a, &id);
-    let first = t.contract.resolve_fund_queue(&id);
-    let second = t.contract.resolve_fund_queue(&id);
+    let first = resolve_queue_mature(&t, &id);
+    let second = resolve_queue_mature(&t, &id);
 
     assert_eq!(first, second);
 }
@@ -177,7 +200,7 @@ fn test_resolve_queue_is_idempotent() {
 // ── Reputation ordering ───────────────────────────────────────────────────────
 
 #[test]
-fn test_highest_reputation_lp_wins_queue() {
+pub(crate) fn test_highest_reputation_lp_wins_queue() {
     let t = setup_queue();
     let id = submit_invoice(&t);
 
@@ -198,12 +221,12 @@ fn test_highest_reputation_lp_wins_queue() {
     t.contract.join_fund_queue(&t.lp_b, &id);
     t.contract.join_fund_queue(&t.lp_c, &id);
 
-    let winner = t.contract.resolve_fund_queue(&id);
+    let winner = resolve_queue_mature(&t, &id);
     assert_eq!(winner, t.lp_b, "Highest-reputation LP should win");
 }
 
 #[test]
-fn test_tie_broken_by_first_come_first_served() {
+pub(crate) fn test_tie_broken_by_first_come_first_served() {
     let t = setup_queue();
     let id = submit_invoice(&t);
 
@@ -211,9 +234,13 @@ fn test_tie_broken_by_first_come_first_served() {
     t.contract.join_fund_queue(&t.lp_a, &id); // joins first
     t.contract.join_fund_queue(&t.lp_b, &id); // joins second
 
-    let winner = t.contract.resolve_fund_queue(&id);
-    // Tie → first in queue wins.
-    assert_eq!(winner, t.lp_a, "First LP wins on tie");
+    let winner = resolve_queue_mature(&t, &id);
+    // Issue #708: ties are now randomized, so join order no longer decides —
+    // but the winner must still be one of the tied LPs.
+    assert!(
+        winner == t.lp_a || winner == t.lp_b,
+        "winner on tie must be one of the tied LPs"
+    );
 }
 
 // ── fund_invoice integration ──────────────────────────────────────────────────
@@ -224,7 +251,7 @@ fn test_approved_lp_can_fund_after_queue_resolution() {
     let id = submit_invoice(&t);
 
     t.contract.join_fund_queue(&t.lp_a, &id);
-    t.contract.resolve_fund_queue(&id);
+    resolve_queue_mature(&t, &id);
 
     // lp_a is approved — should fund successfully.
     t.contract
@@ -235,15 +262,17 @@ fn test_approved_lp_can_fund_after_queue_resolution() {
 }
 
 #[test]
-fn test_non_approved_lp_cannot_fund_after_queue_resolution() {
+pub(crate) fn test_non_approved_lp_cannot_fund_after_queue_resolution() {
     let t = setup_queue();
     let id = submit_invoice(&t);
 
     t.contract.join_fund_queue(&t.lp_a, &id);
-    t.contract.resolve_fund_queue(&id);
+    resolve_queue_mature(&t, &id);
 
     // lp_b is NOT the approved LP.
-    let result = t.contract.try_fund_invoice(&t.lp_b, &id, &INVOICE_AMOUNT);
+    let result = t
+        .contract
+        .try_fund_invoice(&t.lp_b, &id, &INVOICE_AMOUNT, &false);
     assert_eq!(result, Err(Ok(ContractError::NotApprovedFunder)));
 }
 
@@ -282,7 +311,7 @@ fn test_full_queue_lifecycle_with_payout() {
     t.contract.join_fund_queue(&t.lp_a, &id);
     t.contract.join_fund_queue(&t.lp_b, &id);
 
-    let winner = t.contract.resolve_fund_queue(&id);
+    let winner = resolve_queue_mature(&t, &id);
     // Both at score 50, lp_a wins tie.
     assert_eq!(winner, t.lp_a);
 
@@ -308,8 +337,13 @@ fn test_tie_breaking_three_lps_first_come_wins() {
     t.contract.join_fund_queue(&t.lp_b, &id); // 2nd
     t.contract.join_fund_queue(&t.lp_c, &id); // 3rd
 
-    let winner = t.contract.resolve_fund_queue(&id);
-    assert_eq!(winner, t.lp_a, "first LP should win on three-way tie");
+    let winner = resolve_queue_mature(&t, &id);
+    // Issue #708 randomized tie-breaking: any tied LP may win, but the
+    // winner can never be an outsider.
+    assert!(
+        winner == t.lp_a || winner == t.lp_b || winner == t.lp_c,
+        "winner on three-way tie must be one of the queued LPs"
+    );
 }
 
 #[test]
@@ -327,7 +361,7 @@ fn test_join_queue_after_invoice_resolved_rejected() {
     let id = submit_invoice(&t);
 
     t.contract.join_fund_queue(&t.lp_a, &id);
-    t.contract.resolve_fund_queue(&id);
+    resolve_queue_mature(&t, &id);
 
     let result = t.contract.try_join_fund_queue(&t.lp_c, &id);
     assert_eq!(result, Err(Ok(ContractError::NotApprovedFunder)));
@@ -391,10 +425,12 @@ fn test_non_approved_lp_cannot_fund_with_4_arg_signature() {
     let id = submit_invoice(&t);
 
     t.contract.join_fund_queue(&t.lp_a, &id);
-    t.contract.resolve_fund_queue(&id);
+    resolve_queue_mature(&t, &id);
 
     // lp_b is not the approved LP — should fail with 4-arg fund_invoice.
-    let result = t.contract.try_fund_invoice(&t.lp_b, &id, &INVOICE_AMOUNT, &false);
+    let result = t
+        .contract
+        .try_fund_invoice(&t.lp_b, &id, &INVOICE_AMOUNT, &false);
     assert_eq!(result, Err(Ok(ContractError::NotApprovedFunder)));
 }
 
@@ -415,8 +451,11 @@ fn test_queue_lifecycle_with_different_scores() {
     t.contract.join_fund_queue(&t.lp_b, &id);
     t.contract.join_fund_queue(&t.lp_c, &id);
 
-    let winner = t.contract.resolve_fund_queue(&id);
-    assert_eq!(winner, t.lp_c, "highest score should win regardless of join order");
+    let winner = resolve_queue_mature(&t, &id);
+    assert_eq!(
+        winner, t.lp_c,
+        "highest score should win regardless of join order"
+    );
 
     t.contract
         .fund_invoice(&t.lp_c, &id, &INVOICE_AMOUNT, &false);
@@ -432,7 +471,7 @@ fn test_resolve_queue_only_once_stored() {
     let id = submit_invoice(&t);
 
     t.contract.join_fund_queue(&t.lp_a, &id);
-    let first_winner = t.contract.resolve_fund_queue(&id);
+    let first_winner = resolve_queue_mature(&t, &id);
 
     // Adding a new LP with higher score after resolution doesn't change result.
     let boosted_id = submit_invoice(&t);
@@ -445,7 +484,7 @@ fn test_resolve_queue_only_once_stored() {
         .fund_invoice(&t.lp_b, &boosted_id, &INVOICE_AMOUNT, &false);
 
     // Can't join after resolution anyway, but resolve is idempotent.
-    let second_winner = t.contract.resolve_fund_queue(&id);
+    let second_winner = resolve_queue_mature(&t, &id);
     assert_eq!(first_winner, second_winner);
 }
 
@@ -454,7 +493,7 @@ fn test_resolve_queue_only_once_stored() {
 /// Verify that queue is maintained in sorted order (highest score first).
 /// This is the key optimization: resolve_fund_queue can return immediately.
 #[test]
-fn test_queue_maintains_sorted_order_after_joins() {
+pub(crate) fn test_queue_maintains_sorted_order_after_joins() {
     let t = setup_queue();
     let id = submit_invoice(&t);
 
@@ -476,13 +515,13 @@ fn test_queue_maintains_sorted_order_after_joins() {
     t.contract.join_fund_queue(&t.lp_c, &id);
 
     // Resolve should return C (highest score) regardless of join order
-    let winner = t.contract.resolve_fund_queue(&id);
+    let winner = resolve_queue_mature(&t, &id);
     assert_eq!(winner, t.lp_c, "Highest score should be selected");
 }
 
 /// Test that LPs joining in reverse score order are still sorted correctly.
 #[test]
-fn test_queue_sorted_even_when_joining_in_reverse_order() {
+pub(crate) fn test_queue_sorted_even_when_joining_in_reverse_order() {
     let t = setup_queue();
     let id = submit_invoice(&t);
 
@@ -508,13 +547,13 @@ fn test_queue_sorted_even_when_joining_in_reverse_order() {
     t.contract.join_fund_queue(&t.lp_a, &id);
 
     // Even though they joined in descending order, resolve should still work
-    let winner = t.contract.resolve_fund_queue(&id);
+    let winner = resolve_queue_mature(&t, &id);
     assert_eq!(winner, t.lp_c, "Highest score (lp_c) should win");
 }
 
 /// Test that inserting an LP with mid-range score places it correctly.
 #[test]
-fn test_queue_sorted_when_inserting_mid_range_scores() {
+pub(crate) fn test_queue_sorted_when_inserting_mid_range_scores() {
     let t = setup_queue();
     let id = submit_invoice(&t);
 
@@ -536,13 +575,13 @@ fn test_queue_sorted_when_inserting_mid_range_scores() {
     t.contract.join_fund_queue(&t.lp_b, &id);
     t.contract.join_fund_queue(&t.lp_c, &id);
 
-    let winner = t.contract.resolve_fund_queue(&id);
+    let winner = resolve_queue_mature(&t, &id);
     assert_eq!(winner, t.lp_b, "Highest score (lp_b=60) should win");
 }
 
 /// Test that duplicate prevention still works after sorting optimization.
 #[test]
-fn test_duplicate_prevention_with_sorted_queue() {
+pub(crate) fn test_duplicate_prevention_with_sorted_queue() {
     let t = setup_queue();
     let id = submit_invoice(&t);
 
@@ -555,6 +594,6 @@ fn test_duplicate_prevention_with_sorted_queue() {
 
     // Other LPs can still join
     t.contract.join_fund_queue(&t.lp_b, &id);
-    let winner = t.contract.resolve_fund_queue(&id);
+    let winner = resolve_queue_mature(&t, &id);
     assert!(winner == t.lp_a || winner == t.lp_b);
 }

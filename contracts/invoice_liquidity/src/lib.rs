@@ -3099,3 +3099,9 @@ mod tests_invoice_count;
 mod tests_batch_submit_reputation;
 // Issue #pause-checks: expire_invoice and appeal_default pause guards
 mod tests_pause_checks;
+// Economic security regression suite (threat-model B0/B1/D1) — declared here
+// so the consolidated `es_*` tests run in every required CI cargo test pass.
+mod tests_economic_security;
+// Issue #34 reputation-weighted queue was previously ORPHANED (file present
+// but never declared), so its queue-integrity/griefing guards never ran.
+mod tests_lp_priority_queue;
