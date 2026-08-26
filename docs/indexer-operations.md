@@ -120,16 +120,35 @@ Recovery time scales with database size (~seconds per 100 MB including
 verification); the 30-minute RTO assumes databases under ~5 GB, which covers
 projected multi-year mainnet volume at current event rates.
 
-## 5. Replay vs restore
+## 5. Checkpoint replay from an arbitrary ledger
 
 When derived data was produced incorrectly by a buggy indexer (but the ledger
-itself is fine), a full restore is unnecessary — see
-[docs/indexer-incident-runbook.md](indexer-incident-runbook.md) Option B for
-the checkpoint-replay decision path. Ingestion writes are idempotent
-(`invoices` upsert on conflict; `events` deduplicate on
-`(transaction_hash, event_index)`), so re-processing already-known ledgers
-cannot create duplicate rows — it overwrites the derived invoice state with
-freshly decoded values.
+itself is fine), a full restore is unnecessary — replay events from before the
+bad range instead ([incident runbook](indexer-incident-runbook.md) Option B):
+
+```bash
+# Re-process everything from ledger N onward (N itself included)
+pnpm --filter @iln/indexer replay -- --from-ledger 12345678
+
+# Repair only a bounded window, e.g. the ledgers a bad deploy touched
+pnpm --filter @iln/indexer replay -- --from-ledger 12345678 --to-ledger 12400000
+```
+
+Procedure:
+
+1. **Stop live ingestion** (or run replay against a shadow copy of the DB) so the listener does not race the repair.
+2. **Identify the checkpoint** — the last ledger known to produce correct data. `sqlite3 $DB_PATH "SELECT state_value FROM indexer_state WHERE state_key='last_processed_ledger'"` plus the reconciliation report's mismatch details help bound the range.
+3. **Run the replay** command above against `DB_PATH`.
+4. **Verify** — re-run the reconciliation job (`scripts/reconcile.ts --once`, exit code 0) and/or spot-check `/invoices/:id` for the affected ids.
+5. **Resume ingestion** — replay leaves `last_processed_ledger`/`last_processed_cursor` at its final processed transaction, so the live listener continues exactly where replay ended.
+
+Safety properties:
+
+- Ingestion writes are idempotent: `invoices` upsert on conflict; `events`/`reputation_updates` deduplicate on `(transaction_hash, event_index)` — replays cannot create duplicate rows.
+- Per-transaction failures are logged and skipped (`failedTransactions` in the summary); exit code 2 signals partial success for alerting wrappers.
+- The parent invoice row is always written before its child event rows, so foreign keys stay satisfied with `foreign_keys=ON`.
+
+Regression tests: [`indexer/tests/replay.test.ts`](../indexer/tests/replay.test.ts) intentionally corrupts derived state, replays from a pre-corruption checkpoint, and asserts the correct state is restored without duplicate events.
 
 ## 6. Continuous reconciliation
 
