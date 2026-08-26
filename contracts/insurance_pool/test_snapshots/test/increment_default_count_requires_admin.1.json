@@ -225,12 +225,36 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "InitializedAt"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "TokenAddress"
                           }
                         ]
                       },
                       "val": {
                         "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "TotalDefaultCount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 2
                       }
                     }
                   ]

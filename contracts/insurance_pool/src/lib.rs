@@ -34,6 +34,11 @@ use soroban_sdk::{
 /// admin action, and before which a proposal may be cancelled (Issue #542).
 pub const TIMELOCK_DELAY_SECONDS: u64 = 3 * 24 * 60 * 60; // 3 days
 
+/// Seconds in an average month, used to monthly-ize historical claim data
+/// for `get_pool_health`'s solvency estimate. A simplification (not
+/// calendar-accurate) — fine for a rough runway estimate.
+const SECONDS_PER_MONTH: u64 = 30 * 24 * 60 * 60;
+
 /// Errors surfaced by the insurance pool stub.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -99,6 +104,42 @@ pub enum DataKey {
     CoverageTiers,
     /// Optional maximum pool balance cap (governance-configurable).
     BalanceCap,
+    /// Ledger timestamp the pool was initialized at (Issue #pool-health).
+    InitializedAt,
+    /// Count of distinct LPs currently enrolled (Issue #pool-health) — since
+    /// Soroban storage can't be iterated, this running counter is
+    /// maintained alongside the per-LP `Enrolled` flag rather than derived.
+    EnrolledCount,
+    /// Running total of confirmed defaults across all LPs (Issue
+    /// #pool-health) — a pool-wide rollup of the per-LP `DefaultCount`
+    /// already tracked for risk-priced premiums (Issue #528), used to
+    /// estimate the pool's claim rate.
+    TotalDefaultCount,
+}
+
+/// Solvency snapshot returned by `get_pool_health`, so LPs can judge
+/// coverage capacity against enrolled exposure rather than reading raw
+/// balance alone.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoolHealth {
+    /// Current pool balance (premiums collected minus payouts).
+    pub balance: i128,
+    /// Number of distinct LPs currently enrolled in default protection.
+    pub enrolled_lp_count: u32,
+    /// Estimated token outflow per month from claims, projected from the
+    /// pool's historical default count times the flat coverage cap. `0`
+    /// when there's no default history yet.
+    pub estimated_monthly_claim_rate: i128,
+    /// How many months the current balance would last at
+    /// `estimated_monthly_claim_rate`. `None` when there's no claim
+    /// history to project a rate from — this means "not yet estimable",
+    /// not "infinite coverage".
+    ///
+    /// Named `months_of_coverage` rather than the fuller
+    /// `months_of_coverage_at_current_rate` because Soroban's
+    /// `#[contracttype]` caps struct field names at 30 characters.
+    pub months_of_coverage: Option<u32>,
 }
 
 #[contract]
@@ -130,6 +171,7 @@ impl InsurancePool {
         storage.set(&DataKey::Balance, &0i128);
         storage.set(&DataKey::Coverage, &coverage);
         storage.set(&DataKey::TokenAddress, &token);
+        storage.set(&DataKey::InitializedAt, &env.ledger().timestamp());
 
         env.events()
             .publish((symbol_short!("init"), admin), coverage);
@@ -236,6 +278,15 @@ impl InsurancePool {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(lp), &(count + 1));
+
+        let total: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDefaultCount)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDefaultCount, &(total + 1));
         Ok(())
     }
 
@@ -518,6 +569,89 @@ impl InsurancePool {
         Ok(())
     }
 
+    /// Get a point-in-time solvency snapshot: balance, enrolled exposure,
+    /// and an estimated runway based on historical default activity.
+    ///
+    /// The claim-rate estimate is deliberately simple: it projects the
+    /// pool's running total default count (`TotalDefaultCount`, a rollup of
+    /// the per-LP `DefaultCount` already tracked for Issue #528's
+    /// risk-priced premiums) at the flat `Coverage` cap per default, spread
+    /// over the pool's lifetime to date. It does not account for tiered
+    /// coverage varying the actual per-claim payout, or for claim
+    /// frequency changing over time — it's a rough, conservative-by-default
+    /// signal for LPs deciding whether to enroll, not a precise actuarial
+    /// model.
+    pub fn get_pool_health(env: Env) -> PoolHealth {
+        let balance: i128 = env.storage().instance().get(&DataKey::Balance).unwrap_or(0);
+        let enrolled_lp_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EnrolledCount)
+            .unwrap_or(0);
+        let total_defaults: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDefaultCount)
+            .unwrap_or(0);
+
+        // No claim history yet: rate is 0 and there's nothing to divide by.
+        let estimated_monthly_claim_rate = if total_defaults == 0 {
+            0i128
+        } else {
+            let initialized_at: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::InitializedAt)
+                .unwrap_or_else(|| env.ledger().timestamp());
+            let elapsed_seconds = env.ledger().timestamp().saturating_sub(initialized_at);
+            // Floor the divisor at one month so a young pool (or defaults
+            // recorded in the same ledger as initialization) can't inflate
+            // the estimate by dividing by a near-zero time window.
+            let elapsed_months = (elapsed_seconds / SECONDS_PER_MONTH).max(1) as i128;
+            let coverage = Self::get_coverage(env.clone());
+            (total_defaults as i128).saturating_mul(coverage) / elapsed_months
+        };
+
+        let months_of_coverage = if estimated_monthly_claim_rate <= 0 {
+            None
+        } else {
+            let months = balance / estimated_monthly_claim_rate;
+            Some(months.clamp(0, u32::MAX as i128) as u32)
+        };
+
+        PoolHealth {
+            balance,
+            enrolled_lp_count,
+            estimated_monthly_claim_rate,
+            months_of_coverage,
+        }
+    }
+
+    /// Mark `lp` as enrolled, maintaining `EnrolledCount` — a no-op if
+    /// already enrolled, so repeated `enroll()`/`deposit_premium()` calls
+    /// don't inflate the count.
+    fn mark_enrolled(env: &Env, lp: &Address) {
+        let already_enrolled: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Enrolled(lp.clone()))
+            .unwrap_or(false);
+        if already_enrolled {
+            return;
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Enrolled(lp.clone()), &true);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EnrolledCount)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::EnrolledCount, &(count + 1));
+    }
+
     fn require_admin(env: &Env) -> Address {
         match env
             .storage()
@@ -550,9 +684,7 @@ impl InsurancePoolInterface for InsurancePool {
 
     fn enroll(env: Env, lp: Address) {
         lp.require_auth();
-        env.storage()
-            .persistent()
-            .set(&DataKey::Enrolled(lp.clone()), &true);
+        Self::mark_enrolled(&env, &lp);
         env.events().publish((symbol_short!("enrolled"), lp), ());
     }
 
@@ -570,9 +702,7 @@ impl InsurancePoolInterface for InsurancePool {
         }
 
         // Auto-enroll on first premium so a paying LP is always covered.
-        env.storage()
-            .persistent()
-            .set(&DataKey::Enrolled(lp.clone()), &true);
+        Self::mark_enrolled(&env, &lp);
 
         let prev_premium: i128 = env
             .storage()

@@ -57,19 +57,79 @@ security boundary once a change has been proposed by the admin.
 The stub in `contracts/insurance_pool/src/lib.rs` is a **correct, fully-tested**
 implementation of the interface with intentionally simplified economics:
 
-- **Accounting, not custody.** `deposit_premium` records the premium as pool
-  *accounting* balance. A production pool would move SAC tokens into the
-  contract; that token settlement is deliberately out of scope for the stub.
-- **Flat coverage cap.** `claim` pays `min(coverage, pool_balance)`, where
-  `coverage` is a flat per-claim cap set at `initialize`. A production pool
-  would price payouts against the invoice amount, the LP's premium history, and
-  remaining pool solvency.
+- **Accounting, not custody for premiums; real transfers for payouts.**
+  `deposit_premium` moves real SAC tokens from the LP into the pool and
+  records the amount as pool balance; `claim` transfers real tokens back out.
+- **Tiered coverage cap (Issue #528).** `claim` pays
+  `min(tiered_coverage(lp), pool_balance)`, where `tiered_coverage(lp)` scales
+  the configured flat `coverage` cap by how much the LP has paid in premiums
+  over the pool's lifetime — see
+  [Tiered coverage boundaries](#tiered-coverage-boundaries-issue-528) below.
 - **Idempotency & auth.** Each `invoice_id` can be claimed once; `claim`
   requires the configured admin (the liquidity contract in production).
 
-Ten interface tests cover initialization, enrollment, premium accumulation,
-coverage-capped vs balance-capped payouts, idempotency, and the empty-pool and
-invalid-amount rejection paths (`cargo test -p insurance_pool`).
+The crate's test suite (`cargo test -p insurance_pool`) covers initialization,
+enrollment, premium accumulation, tiered and balance-capped payouts,
+idempotency, the empty-pool and invalid-amount rejection paths, risk-priced
+premiums, timelocked admin actions, pool-health estimation, and the
+scale/precision boundary checks described below.
+
+### Tiered coverage boundaries (Issue #528)
+
+`get_tiered_coverage(lp)` scales the flat `coverage` cap (set at `initialize`,
+adjustable via the timelocked `propose_coverage_change` or the no-timelock
+`set_coverage_via_governance`) by how much premium `lp` has paid **over the
+pool's lifetime** (`get_premiums_paid(lp)`, cumulative, never decays):
+
+| LP's cumulative premiums paid (as % of `coverage`) | Coverage multiplier | Rationale |
+|---|---|---|
+| < 10% | 50% | Minimal stake in the pool — reduced protection discourages depositing just enough to qualify. |
+| 10% – 25% | 75% | Moderate, ongoing commitment. |
+| 25% – 50% | 100% | Full flat-cap protection — the "baseline" tier most LPs should target. |
+| ≥ 50% | 150% | Heavy contributors are over-protected relative to the flat cap, since their premiums have materially built up the pool's own solvency. |
+
+Implementation (`contracts/insurance_pool/src/lib.rs::get_tiered_coverage`):
+boundaries are computed as `coverage / 10`, `coverage / 4`, `coverage / 2`,
+and each branch uses `>=`, so a premium total sitting *exactly* on a
+threshold already belongs to the tier above it, not the one below.
+
+This uses **premiums paid**, not pool balance or claim history, as the proxy
+for an LP's stake — deliberately simple for the stub. A production version
+would likely also weight remaining pool solvency (see
+[Follow-up work](#follow-up-work-before-mainnet)) so tier eligibility can't
+outrun what the pool can actually pay out.
+
+#### Verified at scale (precision and i128 boundaries)
+
+`tiered_coverage_low/medium/high/very_high_premiums` exercise the four tiers
+at the crate's small test-fixture coverage (1_000_000_000 stroops). Three
+additional tests confirm the same boundary logic holds at magnitudes the
+fixture doesn't reach:
+
+- **`tiered_coverage_boundaries_hold_at_realistic_mainnet_scale`** — re-runs
+  all four tiers, and each exact threshold ± 1, across coverage caps from
+  $1,000 to $10,000,000 equivalent (assuming 7-decimal stroops, i.e.
+  1e10–1e14), including one non-round value, confirming no integer-division
+  truncation issue distorts a boundary at realistic magnitudes.
+- **`tiered_coverage_resolves_top_tier_with_i128_scale_premiums`** — an LP
+  with cumulative premiums near `i128::MAX` (mirroring
+  `deposit_premium_at_i128_max_overflows`'s technique) against a
+  $10,000,000-equivalent coverage cap still resolves cleanly to the top tier;
+  the `>=` threshold comparison itself has no overflow risk regardless of how
+  large `premiums_paid` grows, since comparison isn't arithmetic.
+- **`tiered_coverage_overflows_past_the_i128_safe_bound`** — the top tier's
+  payout, `(coverage * 150) / 100`, requires the intermediate product
+  `coverage * 150` to fit in `i128`. That means `coverage` itself must stay
+  below `i128::MAX / 150` (≈ 1.13 × 10³⁶ stroops, ≈ 1.13 × 10²⁹ dollars at
+  7-decimal stroops) for `get_tiered_coverage` to be computable at all — about
+  10²² times the $10,000,000 ceiling exercised above, so this is a
+  defensive/theoretical bound rather than an operational concern under any
+  sane governance-set coverage cap. Soroban's checked arithmetic panics on
+  overflow, and the generated client's `try_*` methods surface that as a
+  trapped `Err` rather than corrupting state or silently wrapping — the test
+  confirms both that the bound is exactly where the math says it should be
+  (safe at `i128::MAX / 150`, erroring just past it) and that governance is
+  not expected to enforce an explicit upper bound on `coverage` today.
 
 ## Integration with `invoice_liquidity` (Issue #529)
 
@@ -265,8 +325,14 @@ console.log(`Claim filed for invoice ${invoiceId}: payout ${payout} stroops`);
 
 ## Follow-up work (before mainnet)
 
-- Real SAC token custody for premiums and payouts.
-- Risk-priced premiums and coverage (vs. flat cap).
-- Pool solvency guards and payout prioritization across simultaneous defaults.
+- ~~Real SAC token custody for premiums and payouts.~~ Done (Issue #527).
+- ~~Risk-priced premiums and coverage (vs. flat cap).~~ Done (Issue #528) —
+  see [Tiered coverage boundaries](#tiered-coverage-boundaries-issue-528).
+- Pool solvency guards and payout prioritization across simultaneous defaults
+  — tier eligibility (above) is based on premiums paid only and doesn't yet
+  weight remaining pool balance, so a pool near-depleted by prior claims could
+  still nominally owe a top-tier LP more than it can pay (`claim` does clamp
+  the actual payout to `pool_balance`, but tier *eligibility* itself doesn't
+  account for solvency).
 - Governance parameters (premium schedule, coverage ratio).
 - End-to-end integration tests across `invoice_liquidity` ⇄ `insurance_pool`.
