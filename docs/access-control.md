@@ -182,8 +182,27 @@ Rate limiting is implemented in `contracts/invoice_liquidity/src/access.rs`:
 - **Finding:** Several admin functions (`update_fee_rate`, `set_admin`, `upgrade`, etc.) lacked any rate-limiting mechanism, allowing rapid successive calls that could be used to grief the protocol or confuse indexers.
 - **Resolution:** Added `check_rate_limit` guard to all sensitive admin functions with appropriate cooldown periods.
 
-## 7. Security Notes
-## 5. Security Notes
+## 7. Pause Behavior & Cross-Contract Scope
+
+### Scope of `pause()`
+
+`pause()` sets a single `Paused` flag (see `docs/storage-layout.md`) read by the *invoice_liquidity* contract's own state-changing entry points — `submit_invoice`, `fund_invoice`, `mark_paid`, `claim_yield`, `claim_default`, `appeal_default`, `expire_invoice`, etc. Each checks `is_paused` and returns `ContractError::ContractPaused` before performing any state mutation.
+
+Two categories of operation are explicitly **not** affected by this flag:
+
+1. **Read-only views**, e.g. `get_contract_stats`, `get_invoice`, `payer_score`/`lp_score`, and — the subject of this section — the oracle registry's read surface: `get_oracle_for_token`, `get_oracle_health`, and `check_oracle_health`. These carry no `is_paused` guard by design, so monitoring/keeper tooling can keep observing protocol and oracle state throughout an incident. `check_oracle_health` in particular performs a live cross-contract call to the resolved oracle and persists a health snapshot — this succeeds identically whether the contract is paused or not.
+2. **Oracle registry governance mutations** — `register_oracle`, `remove_oracle`, `register_token_oracle`, `remove_token_oracle` (Issue #532). These are gated only by `require_admin`, not `is_paused`. This is intentional: repointing or clearing a misbehaving oracle is itself a common *response* to an incident, and gating it behind an unpause would create a chicken-and-egg problem for governance.
+
+### The cross-contract boundary
+
+The oracle registry tracked here is bookkeeping *inside* invoice_liquidity (which oracle address to query for a given feed type/token) — the oracles it points at are themselves separate deployed contracts, and governance itself typically operates through the separate Governance contract, executing proposals that call back into `register_oracle`/`remove_oracle`. Pausing invoice_liquidity has no effect on either:
+
+- The external oracle contracts continue to serve `get_payer_data` / price queries exactly as before — pausing the consumer does not pause the provider.
+- The Governance contract's own proposal lifecycle (`propose`, `vote`, `execute`) is entirely unaware of invoice_liquidity's `Paused` flag; only the *effect* of an executed oracle-config proposal (a call to `register_oracle`/`remove_oracle`) lands here, and, per above, that call itself is not blocked by pause.
+
+In short: **pause halts invoice_liquidity's own funding/settlement mutations only** — it is not a kill switch for oracle reads, oracle governance, or any other contract in the system. `fund_invoice` reflects this correctly: it checks `is_paused` as its very first step, so a paused call never reaches the oracle registry at all (no query, no health write) rather than querying it and silently discarding the result. See `contracts/invoice_liquidity/src/tests_oracle_registry.rs` (`test_get_oracle_for_token_readable_while_paused`, `test_check_oracle_health_readable_while_paused`, `test_fund_invoice_paused_never_reaches_oracle_registry`, `test_oracle_registry_mutations_unaffected_by_core_contract_pause`).
+
+## 8. Security Notes
 
 - **Principle of Least Privilege**: Each instruction relies only on the minimal authority required to execute.
 - **Centralized Verification**: Extracted inline logic ensures uniform verification logic and robust testing.

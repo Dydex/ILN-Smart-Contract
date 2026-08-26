@@ -66,6 +66,14 @@ All on-chain actions are defined by the `ProposalAction` enum.
 | `UpdateMaxDiscountRate(u32)` | `update_max_discount` | Cap on invoice discount rates in basis points |
 | `AddToken(Address)` | `add_token` | Whitelist a new payment token |
 | `RemoveToken(Address)` | `remove_token` | Delist an existing payment token |
+| `RegisterOracle(OracleFeedType, Address)` | `register_oracle` | Register (or update) the default oracle for a feed type |
+| `RemoveOracle(OracleFeedType)` | `remove_oracle` | Remove the default oracle for a feed type |
+
+> **Before proposing a `RegisterOracle` action:** see
+> [Oracle Provider Vetting](oracle-provider-vetting.md) for the disclosure
+> criteria (track record, data-source decentralization, freshness SLA,
+> incident history) a proposal must include, and the required proposal
+> template.
 
 Admin-only functions that are **not** governable via proposals:
 `set_admin`, `set_distribution_contract`.

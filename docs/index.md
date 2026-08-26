@@ -41,6 +41,7 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [SDK README](../sdk/README.md) | Package usage for `@iln/sdk`. |
 | [Oracle Design](oracle-design.md) | Optional payer-verification oracle model. |
 | [Oracle Integration](oracle-integration.md) | Deploying and registering compatible oracles. |
+| [Oracle Provider Vetting](oracle-provider-vetting.md) | Governance vetting criteria and proposal template for approving oracle providers. |
 
 ## Project Process
 

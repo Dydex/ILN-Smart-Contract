@@ -419,7 +419,7 @@ fn premium_rate_change_does_not_retroactively_affect_enrolled_lp_coverage() {
 
     // 2. Governance changes the base premium rate (double it)
     let new_rate = 1000; // 10% instead of 5%
-    s.client.set_base_premium_rate_via_governance(&new_rate);
+    s.client.set_base_premium_rate_bps(&new_rate);
     assert_eq!(s.client.get_base_premium_rate_bps(), new_rate);
 
     // 3. LP's existing tiered coverage should NOT be retroactively affected
@@ -537,4 +537,264 @@ fn balance_cap_can_be_cleared() {
     s.token_admin.mint(&s.lp, &amount);
     s.client.deposit_premium(&s.lp, &amount);
     assert_eq!(s.client.get_pool_balance(), amount);
+}
+
+// ── get_pool_health (Issue #pool-health) ──────────────────────────────
+
+#[test]
+fn get_pool_health_zero_history_does_not_panic() {
+    let s = setup();
+
+    // No deposits, no defaults, no enrollments — this must not divide by
+    // zero or panic, and must report an explicitly "unknown", not
+    // "infinite" or zero-defaulted-to-huge, runway.
+    let health = s.client.get_pool_health();
+    assert_eq!(health.balance, 0);
+    assert_eq!(health.enrolled_lp_count, 0);
+    assert_eq!(health.estimated_monthly_claim_rate, 0);
+    assert_eq!(health.months_of_coverage, None);
+}
+
+#[test]
+fn get_pool_health_typical_history_estimates_runway() {
+    let s = setup();
+
+    // Fund the pool well beyond a single coverage payout.
+    let deposit = COVERAGE * 5;
+    s.token_admin.mint(&s.lp, &deposit);
+    s.client.deposit_premium(&s.lp, &deposit);
+
+    // 3 confirmed defaults recorded over the pool's first 3 months, against
+    // a second, separately enrolled LP (default history and enrollment are
+    // tracked independently — enrolling here is what makes the
+    // enrolled_lp_count assertion below meaningful).
+    let other_lp = Address::generate(&s.env);
+    s.client.enroll(&other_lp);
+    s.client.increment_default_count(&s.lp);
+    s.client.increment_default_count(&other_lp);
+    s.client.increment_default_count(&other_lp);
+    let initialized_at = s.env.ledger().timestamp();
+    s.env
+        .ledger()
+        .set_timestamp(initialized_at + 3 * SECONDS_PER_MONTH);
+
+    let health = s.client.get_pool_health();
+    assert_eq!(health.balance, deposit);
+    assert_eq!(health.enrolled_lp_count, 2); // s.lp + other_lp, auto/explicit enrolled
+
+    // rate = 3 defaults * COVERAGE / 3 months = COVERAGE / month.
+    assert_eq!(health.estimated_monthly_claim_rate, COVERAGE);
+    // balance (5x COVERAGE) / rate (1x COVERAGE) = 5 months of runway.
+    assert_eq!(health.months_of_coverage, Some(5));
+}
+
+#[test]
+fn get_pool_health_high_claim_rate_signals_low_runway() {
+    let s = setup();
+
+    // A thin balance relative to a heavy burst of defaults.
+    let deposit = COVERAGE;
+    s.token_admin.mint(&s.lp, &deposit);
+    s.client.deposit_premium(&s.lp, &deposit);
+
+    // 50 defaults, all within the same (first) month of the pool's life —
+    // elapsed time floors at 1 month, so the rate isn't artificially
+    // inflated further by a near-zero time window, but is still severe.
+    for _ in 0..50 {
+        s.client.increment_default_count(&s.lp);
+    }
+
+    let health = s.client.get_pool_health();
+    // rate = 50 * COVERAGE / 1 month — far exceeds the pool's balance.
+    assert_eq!(health.estimated_monthly_claim_rate, 50 * COVERAGE);
+    // balance < rate, so integer division floors to 0 months — a clear
+    // "critically low" signal rather than a panic or a negative/garbage value.
+    assert_eq!(health.months_of_coverage, Some(0));
+}
+
+#[test]
+fn get_pool_health_counts_distinct_enrolled_lps_once() {
+    let s = setup();
+    let lp_a = Address::generate(&s.env);
+    let lp_b = Address::generate(&s.env);
+
+    s.client.enroll(&lp_a);
+    assert_eq!(s.client.get_pool_health().enrolled_lp_count, 1);
+
+    // Re-enrolling the same LP must not double-count.
+    s.client.enroll(&lp_a);
+    assert_eq!(s.client.get_pool_health().enrolled_lp_count, 1);
+
+    // A second, distinct LP auto-enrolling via deposit_premium does count.
+    s.token_admin.mint(&lp_b, &100);
+    s.client.deposit_premium(&lp_b, &100);
+    assert_eq!(s.client.get_pool_health().enrolled_lp_count, 2);
+}
+
+// ── Tiered coverage at scale ──────────────────────────────────────────
+//
+// tiered_coverage_low/medium/high/very_high_premiums (above) exercise the
+// four tiers only at the fixed COVERAGE test fixture (1_000_000_000
+// stroops, ~100 units). This section re-runs the same boundary logic
+// across coverage caps spanning realistic mainnet magnitudes and stress
+// values near the i128 range, per the design doc's documented tier
+// boundaries (docs/insurance-pool-design.md).
+
+/// Sets the pool's coverage cap and returns `get_tiered_coverage` for a
+/// freshly generated LP whose only premium is `premium` — isolating each
+/// check from the others regardless of call order.
+fn tier_for(s: &Setup, coverage: i128, premium: i128) -> i128 {
+    s.client.set_coverage_via_governance(&coverage);
+    let lp = Address::generate(&s.env);
+    s.token_admin.mint(&lp, &premium);
+    s.client.deposit_premium(&lp, &premium);
+    s.client.get_tiered_coverage(&lp)
+}
+
+#[test]
+fn tiered_coverage_boundaries_hold_at_realistic_mainnet_scale() {
+    let s = setup();
+
+    // Stellar assets typically use 7 decimals, so $1,000-$10,000,000
+    // equivalent spans roughly 1e10-1e14 stroops. Includes one non-round
+    // value to catch truncation bugs that only surface when the coverage
+    // cap isn't a clean multiple of 4/10/20, and one deliberately far
+    // beyond any realistic pool (but still under the i128-overflow bound
+    // established in tiered_coverage_overflows_past_the_i128_safe_bound
+    // below) to confirm boundary selection itself doesn't degrade at scale.
+    let coverages: [i128; 6] = [
+        10_000_000_000,      // $1,000
+        100_000_000_000,     // $10,000
+        1_000_000_000_777,   // ~$100,000, non-round
+        10_000_000_000_000,  // $1,000,000
+        100_000_000_000_000, // $10,000,000
+        i128::MAX / 1_000,   // far beyond realistic, still overflow-safe
+    ];
+
+    for &coverage in coverages.iter() {
+        let threshold_10 = coverage / 10;
+        let threshold_25 = coverage / 4;
+        let threshold_50 = coverage / 2;
+
+        // Deep inside each bracket.
+        assert_eq!(
+            tier_for(&s, coverage, threshold_10 / 2),
+            (coverage * 50) / 100,
+            "coverage={coverage}: deep in <10% bracket must be the 50% tier"
+        );
+        assert_eq!(
+            tier_for(&s, coverage, (threshold_10 + threshold_25) / 2),
+            (coverage * 75) / 100,
+            "coverage={coverage}: deep in 10-25% bracket must be the 75% tier"
+        );
+        assert_eq!(
+            tier_for(&s, coverage, (threshold_25 + threshold_50) / 2),
+            coverage,
+            "coverage={coverage}: deep in 25-50% bracket must be the 100% tier"
+        );
+        assert_eq!(
+            tier_for(&s, coverage, threshold_50 * 2),
+            (coverage * 150) / 100,
+            "coverage={coverage}: well above 50% must be the 150% tier"
+        );
+
+        // Exact boundaries: `>=` means the threshold value itself belongs
+        // to the tier *above* it, not the one below.
+        assert_eq!(
+            tier_for(&s, coverage, threshold_10 - 1),
+            (coverage * 50) / 100,
+            "coverage={coverage}: threshold_10 - 1 must still be the 50% tier"
+        );
+        assert_eq!(
+            tier_for(&s, coverage, threshold_10),
+            (coverage * 75) / 100,
+            "coverage={coverage}: exactly threshold_10 must already be the 75% tier"
+        );
+        assert_eq!(
+            tier_for(&s, coverage, threshold_25 - 1),
+            (coverage * 75) / 100,
+            "coverage={coverage}: threshold_25 - 1 must still be the 75% tier"
+        );
+        assert_eq!(
+            tier_for(&s, coverage, threshold_25),
+            coverage,
+            "coverage={coverage}: exactly threshold_25 must already be the 100% tier"
+        );
+        assert_eq!(
+            tier_for(&s, coverage, threshold_50 - 1),
+            coverage,
+            "coverage={coverage}: threshold_50 - 1 must still be the 100% tier"
+        );
+        assert_eq!(
+            tier_for(&s, coverage, threshold_50),
+            (coverage * 150) / 100,
+            "coverage={coverage}: exactly threshold_50 must already be the 150% tier"
+        );
+    }
+}
+
+#[test]
+fn tiered_coverage_resolves_top_tier_with_i128_scale_premiums() {
+    let s = setup();
+    let coverage: i128 = 100_000_000_000_000; // $10,000,000 equivalent
+    s.client.set_coverage_via_governance(&coverage);
+
+    // An LP whose cumulative premiums approach i128::MAX (the same
+    // two-deposit technique deposit_premium_at_i128_max_overflows uses to
+    // stress the balance accumulator) must still resolve cleanly to the
+    // top tier — no truncation or misfired comparison just because
+    // premiums_paid vastly exceeds the coverage cap it's being compared
+    // against.
+    let lp = Address::generate(&s.env);
+    let near_max = i128::MAX - 1;
+    s.token_admin.mint(&lp, &near_max);
+    s.client.deposit_premium(&lp, &near_max);
+    assert_eq!(s.client.get_premiums_paid(&lp), near_max);
+
+    assert_eq!(
+        s.client.get_tiered_coverage(&lp),
+        (coverage * 150) / 100,
+        "premiums_paid near i128::MAX must still resolve to the top (150%) tier"
+    );
+}
+
+#[test]
+fn tiered_coverage_overflows_past_the_i128_safe_bound() {
+    let s = setup();
+
+    // The top tier's payout is `(coverage * 150) / 100` — the intermediate
+    // product `coverage * 150` is what has to fit in i128, so `coverage`
+    // itself must stay below i128::MAX / 150 (~1.13e36) for that tier to
+    // be computable at all. That's ~1e22x the $10,000,000-equivalent
+    // ceiling exercised in tiered_coverage_boundaries_hold_at_realistic_mainnet_scale,
+    // so this is a defensive/theoretical bound rather than an operational
+    // concern under any sane governance-set coverage cap — but it's worth
+    // pinning down explicitly. See docs/insurance-pool-design.md.
+    let safe_bound = i128::MAX / 150;
+
+    // Exactly at the safe bound: the top tier must compute without
+    // overflowing.
+    let lp_safe = Address::generate(&s.env);
+    s.client.set_coverage_via_governance(&safe_bound);
+    s.token_admin.mint(&lp_safe, &safe_bound);
+    s.client.deposit_premium(&lp_safe, &safe_bound); // >= threshold_50
+    assert!(
+        s.client.try_get_tiered_coverage(&lp_safe).is_ok(),
+        "coverage at the i128 safe bound must not overflow"
+    );
+
+    // Just past it: the top tier's multiplication now overflows i128.
+    // Soroban's checked arithmetic panics on overflow, and try_* surfaces
+    // that as a trapped Err rather than corrupting state or silently
+    // wrapping — this is what makes leaving Coverage uncapped safe rather
+    // than a live risk.
+    let over_bound = safe_bound + 1_000_000;
+    let lp_over = Address::generate(&s.env);
+    s.client.set_coverage_via_governance(&over_bound);
+    s.token_admin.mint(&lp_over, &over_bound);
+    s.client.deposit_premium(&lp_over, &over_bound); // >= threshold_50
+    assert!(
+        s.client.try_get_tiered_coverage(&lp_over).is_err(),
+        "coverage past the i128 safe bound must trap on overflow rather than silently wrapping"
+    );
 }
