@@ -403,6 +403,44 @@ fn governance_can_set_premium_rate() {
 }
 
 #[test]
+fn premium_rate_change_does_not_retroactively_affect_enrolled_lp_coverage() {
+    let s = setup();
+    let lp = Address::generate(&s.env);
+
+    // 1. LP deposits premium at the original base rate (default 500 bps = 5%)
+    let deposit_amount = COVERAGE / 3; // ~33% -> tier 4: 150% coverage
+    s.token_admin.mint(&lp, &deposit_amount);
+    s.client.deposit_premium(&lp, &deposit_amount);
+    assert!(s.client.is_enrolled(&lp));
+
+    // Record the tiered coverage before rate change
+    let coverage_before = s.client.get_tiered_coverage(&lp);
+    assert_eq!(coverage_before, (COVERAGE * 150) / 100); // 150% tier for >25% deposit
+
+    // 2. Governance changes the base premium rate (double it)
+    let new_rate = 1000; // 10% instead of 5%
+    s.client.set_base_premium_rate_via_governance(&new_rate);
+    assert_eq!(s.client.get_base_premium_rate_bps(), new_rate);
+
+    // 3. LP's existing tiered coverage should NOT be retroactively affected
+    let coverage_after = s.client.get_tiered_coverage(&lp);
+    assert_eq!(
+        coverage_after, coverage_before,
+        "Already-enrolled LP's tiered coverage must not change when base rate changes"
+    );
+
+    // 4. Verify the new rate affects calculations for future deposits
+    let rate_for_lp = s.client.calculate_premium_rate_bps(&lp);
+    // The rate calculation should reflect the new base rate
+    assert!(rate_for_lp >= new_rate, "New base rate should apply to rate calculations");
+
+    // 5. A new LP or new deposits should use the new rate
+    let other_lp = Address::generate(&s.env);
+    let rate_for_other = s.client.calculate_premium_rate_bps(&other_lp);
+    assert_eq!(rate_for_other, new_rate, "New LP should use the new base rate");
+}
+
+#[test]
 fn coverage_update_affects_future_claims() {
     let s = setup();
     let lp = Address::generate(&s.env);
