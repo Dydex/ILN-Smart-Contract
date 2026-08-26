@@ -30,7 +30,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | Item | Description | Owner | Status | Link |
 |------|-------------|-------|--------|------|
 | Indexer deployed | Deploy production indexer with backup, restore, and replay procedures. | Infrastructure lead | In progress | [indexer](../indexer) |
-| Monitoring configured | Configure health checks, alerting, log retention, and on-call routing for indexer and notifications. | Infrastructure lead | Not started | [CI/CD](ci-cd.md) |
+| Monitoring configured | Configure health checks, alerting, log retention, and on-call routing for indexer and notifications. | Infrastructure lead | In progress | [monitoring-runbook.md](monitoring-runbook.md) |
 | Notifications deployed | Deploy webhook/email notifications with HMAC signing, rate limiting, and SSRF controls verified. | Infrastructure lead | In progress | [notifications](../notifications) |
 | Incident response runbook | Publish escalation, rollback, advisory, and user-communication steps. | Security lead | Not started | [Security Policy](security.md) |
 | Deployment secrets reviewed | Confirm production secrets are stored in GitHub Actions or approved secret management only. | Release lead | In progress | [Deploy testnet workflow](../.github/workflows/deploy-testnet.yml) |

@@ -76,7 +76,13 @@ docker compose down
 - `CONTRACT_ID` or `ILN_CONTRACT_ID` - ILN contract address used for Horizon event ingestion
 - `DB_PATH` - SQLite database file path (default: ./data/indexer.db)
 - `LOG_LEVEL` - Logging level (default: info)
-- `API_KEYS` - Optional comma-separated list of `X-API-Key` values that bypass the public rate limit
+- `API_KEYS` - Optional comma-separated list of `X-API-Key` values (higher rate-limit tier)
+- `RATE_LIMIT_ANON_MAX` - Anonymous requests per window (default `60`)
+- `RATE_LIMIT_API_KEY_MAX` - API-key requests per window (default `600`)
+- `RATE_LIMIT_WINDOW_MS` - Rate-limit window in ms (default `60000`)
+- `GRAPHQL_MAX_DEPTH` / `GRAPHQL_MAX_COMPLEXITY` - GraphQL abuse limits (defaults `8` / `200`)
+- `INGESTION_ENABLED` - Set `false` on read-only API replicas (default `true`)
+- `HEALTH_MAX_LAG_LEDGERS` - Lag threshold for degraded health (default `50`)
 
 ### Health Check
 
@@ -85,7 +91,7 @@ The health endpoint is available at:
 GET /health
 ```
 
-Returns `{ status: 'ok' }` when the service is ready.
+Returns DB, Horizon, ingestion lag/leader signals. See [monitoring-runbook.md](../docs/monitoring-runbook.md) and [indexer-ha.md](../docs/indexer-ha.md).
 
 ## API Endpoints
 
