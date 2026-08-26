@@ -16,6 +16,7 @@
     "backup": "tsx scripts/backup.ts",
     "restore": "tsx scripts/restore.ts",
     "verify-restore": "tsx scripts/verify-restore.ts",
+    "reconcile": "tsx scripts/reconcile.ts",
     "clean": "rm -rf dist coverage node_modules/.cache backups restored"
   },
   "dependencies": {
