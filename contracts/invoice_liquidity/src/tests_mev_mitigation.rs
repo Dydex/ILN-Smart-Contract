@@ -101,7 +101,7 @@ fn advance_ledgers(env: &Env, delta: u32) {
 // ── Maturity delay: reject before delay elapses ───────────────────────────────
 
 #[test]
-fn test_resolve_queue_fails_immediately_after_join() {
+pub(crate) fn test_resolve_queue_fails_immediately_after_join() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -113,7 +113,7 @@ fn test_resolve_queue_fails_immediately_after_join() {
 }
 
 #[test]
-fn test_resolve_queue_fails_one_ledger_before_delay() {
+pub(crate) fn test_resolve_queue_fails_one_ledger_before_delay() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -129,7 +129,7 @@ fn test_resolve_queue_fails_one_ledger_before_delay() {
 // ── Maturity delay: succeed after delay elapses ───────────────────────────────
 
 #[test]
-fn test_resolve_queue_succeeds_after_delay() {
+pub(crate) fn test_resolve_queue_succeeds_after_delay() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -143,7 +143,7 @@ fn test_resolve_queue_succeeds_after_delay() {
 }
 
 #[test]
-fn test_resolve_queue_succeeds_well_after_delay() {
+pub(crate) fn test_resolve_queue_succeeds_well_after_delay() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -159,7 +159,7 @@ fn test_resolve_queue_succeeds_well_after_delay() {
 // ── Timer is anchored to the FIRST join, not subsequent ones ──────────────────
 
 #[test]
-fn test_second_lp_join_does_not_reset_maturity_timer() {
+pub(crate) fn test_second_lp_join_does_not_reset_maturity_timer() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -184,7 +184,7 @@ fn test_second_lp_join_does_not_reset_maturity_timer() {
 // ── Idempotency: already-resolved queue returns cached winner immediately ─────
 
 #[test]
-fn test_resolve_already_resolved_queue_returns_same_winner() {
+pub(crate) fn test_resolve_already_resolved_queue_returns_same_winner() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -201,7 +201,7 @@ fn test_resolve_already_resolved_queue_returns_same_winner() {
 // ── Event emission ────────────────────────────────────────────────────────────
 
 #[test]
-fn test_rejected_resolution_emits_attempt_event_with_success_false() {
+pub(crate) fn test_rejected_resolution_emits_attempt_event_with_success_false() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -227,7 +227,7 @@ fn test_rejected_resolution_emits_attempt_event_with_success_false() {
 }
 
 #[test]
-fn test_successful_resolution_emits_attempt_event_with_success_true() {
+pub(crate) fn test_successful_resolution_emits_attempt_event_with_success_true() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -259,7 +259,7 @@ fn test_successful_resolution_emits_attempt_event_with_success_true() {
 // actually exercised, not dead code that happens to always pick index 0.
 
 #[test]
-fn test_tie_resolution_is_not_always_the_first_joiner() {
+pub(crate) fn test_tie_resolution_is_not_always_the_first_joiner() {
     let t = setup_mev();
 
     let mut lp_a_wins = 0;
@@ -294,7 +294,7 @@ fn test_tie_resolution_is_not_always_the_first_joiner() {
 }
 
 #[test]
-fn test_resolve_queue_still_resolves_deterministically_for_a_single_lp() {
+pub(crate) fn test_resolve_queue_still_resolves_deterministically_for_a_single_lp() {
     // No tie at all (only one LP in the queue) — the PRNG-gated tied_count
     // check must not change the existing single-candidate behavior.
     let t = setup_mev();
@@ -322,7 +322,7 @@ fn test_resolve_queue_still_resolves_deterministically_for_a_single_lp() {
 // this contract deliberately doesn't restrict.
 
 #[test]
-fn test_queue_winner_can_transfer_position_to_queue_loser() {
+pub(crate) fn test_queue_winner_can_transfer_position_to_queue_loser() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -334,11 +334,16 @@ fn test_queue_winner_can_transfer_position_to_queue_loser() {
     advance_ledgers(&t.env, QUEUE_DELAY_LEDGERS);
 
     let winner = t.contract.resolve_fund_queue(&id);
-    let loser = if winner == t.lp_a { t.lp_b.clone() } else { t.lp_a.clone() };
+    let loser = if winner == t.lp_a {
+        t.lp_b.clone()
+    } else {
+        t.lp_a.clone()
+    };
 
     // Winner funds the invoice, then transfers the resulting position
     // straight to the losing queue participant.
-    t.contract.fund_invoice(&winner, &id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&winner, &id, &INVOICE_AMOUNT, &false);
     let result = t.contract.try_transfer_lp_position(&id, &loser);
 
     assert!(

@@ -154,7 +154,12 @@ export class EventListener {
     await this.processTransaction(record);
   }
 
-  private async processTransaction(record: HorizonTransactionRecord): Promise<void> {
+  /**
+   * Decode, persist, and checkpoint a single Horizon transaction record.
+   * Public so the replay runner can re-process historical transactions with
+   * identical semantics to live ingestion (idempotent upserts).
+   */
+  async processTransaction(record: HorizonTransactionRecord): Promise<void> {
     let processedSuccessfully = false;
 
     try {
@@ -169,8 +174,9 @@ export class EventListener {
         const existingInvoice = invoiceId === null ? undefined : this.repository.getInvoice(invoiceId);
         const processed = normalizeProcessedEvent(event, record, index, existingInvoice, payload);
 
-        this.repository.insertEvent(processed.rawEvent);
-
+        // Upsert the parent invoice row BEFORE the child event row so the
+        // events.invoice_id -> invoices(id) foreign key holds when foreign
+        // keys are enforced (production enables them via getDb()).
         if (processed.invoiceRow) {
           this.repository.upsertInvoice(processed.invoiceRow);
         }
@@ -178,6 +184,8 @@ export class EventListener {
         if (processed.reputationUpdateRow) {
           this.repository.insertReputationUpdate(processed.reputationUpdateRow);
         }
+
+        this.repository.insertEvent(processed.rawEvent);
 
         this.logger.info(
           `processed ${processed.rawEvent.contract_event_type ?? processed.rawEvent.event_type} at ledger ${processed.rawEvent.ledger} (tx ${record.hash})`

@@ -5,7 +5,8 @@ import { createApp } from './app.js';
 import { EventWebSocketEndpoint } from './api/websocket.js';
 import { createSqlEventRepository } from './db/eventRepository.js';
 import { createEventListener } from './ingestion/eventListener.js';
-import { createIngestionLock } from './ingestion/ingestionLock.js';
+import { startReconciliationSchedule, createWebhookAlertDispatcher } from './reconciliation/consistencyJob.js';
+import { SorobanChainReader } from './reconciliation/chainReader.js';
 
 const db = getDb(config.dbPath);
 const app = createApp(db, { apiKeys: config.apiKeys });
@@ -15,49 +16,39 @@ const eventListener = createEventListener({
   horizonUrl: config.horizonUrl,
   contractAddress: config.contractId,
 });
-const ingestionLock = createIngestionLock({ db });
-const ingestionAbort = new AbortController();
 
 const httpServer = createServer(app);
 const wsEndpoint = new EventWebSocketEndpoint({ server: httpServer, path: '/events' });
 wsEndpoint.start();
 
-/**
- * Ingestion is single-writer: only the process holding the SQLite lease lock
- * consumes the Horizon stream. API-only replicas set INGESTION_ENABLED=false.
- * See docs/monitoring-runbook.md and docs/indexer-ha.md.
- */
-if (config.ingestionEnabled && config.contractId) {
-  void ingestionLock
-    .runAsLeader(async (signal) => {
-      const stopOnAbort = () => eventListener.stop();
-      signal.addEventListener('abort', stopOnAbort, { once: true });
-      try {
-        await eventListener.start();
-      } finally {
-        signal.removeEventListener('abort', stopOnAbort);
-      }
-    }, ingestionAbort.signal)
-    .catch((error) => {
-      console.error('Indexer ingestion loop exited unexpectedly:', error);
+if (config.contractId) {
+  void eventListener.start().catch((error) => {
+    console.error('Indexer ingestion loop exited unexpectedly:', error);
+  });
+
+  if (process.env.RECONCILIATION_ENABLED === 'true') {
+    const rpcUrl = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
+    const chainReader = new SorobanChainReader({
+      rpcUrl,
+      contractId: config.contractId,
+      networkPassphrase: process.env.NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015',
     });
-} else if (!config.contractId) {
-  console.warn('ILN_CONTRACT_ID/CONTRACT_ID is not set; event ingestion is disabled.');
+    const alertUrl = process.env.RECONCILIATION_ALERT_URL;
+    if (alertUrl) {
+      startReconciliationSchedule(db, chainReader, {
+        alert: createWebhookAlertDispatcher(alertUrl),
+      });
+    } else {
+      startReconciliationSchedule(db, chainReader);
+    }
+    console.log('Continuous reconciliation schedule started.');
+  }
 } else {
-  console.info('INGESTION_ENABLED=false; running as read-only API replica.');
+  console.warn('ILN_CONTRACT_ID/CONTRACT_ID is not set; event ingestion is disabled.');
 }
 
 httpServer.listen(config.port, () => {
   console.log(`ILN Indexer API running on port ${config.port} (HTTP + WebSocket /events)`);
 });
 
-function shutdown() {
-  ingestionAbort.abort();
-  eventListener.stop();
-  ingestionLock.release();
-}
-
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-
-export { wsEndpoint, eventListener, ingestionLock };
+export { wsEndpoint, eventListener };
