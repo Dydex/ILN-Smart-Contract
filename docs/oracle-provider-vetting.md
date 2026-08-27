@@ -128,7 +128,37 @@ A registered oracle is only as trustworthy as what feeds it. Evaluate:
   wallet, multisig, HSM)? A single hot key operating a widely-relied-upon
   oracle is a material risk regardless of the data source quality.
 
-### 2.6 Economic & operational disclosure
+### 2.6 Sandwich Attack Resistance (Price Feeds Only)
+
+**Applies only to `OracleFeedType::Price` feed proposals.**
+
+Price oracles that derive from on-chain DEX/AMM liquidity pools are vulnerable
+to sandwich attacks where an adversary can manipulate the reported price by
+front-running oracle queries. For ILN's use case (USD volume normalization in
+contract statistics), evaluate:
+
+- **Data Source Type:** Does the oracle use:
+  - Off-chain signed price feeds (Chainlink, Pyth, etc.) — **LOW risk**
+  - On-chain DEX spot prices without protection — **HIGH risk**
+  - On-chain DEX prices with TWAP protection — **MEDIUM-LOW risk**
+  - Multi-source aggregation — **REDUCED risk**
+- **TWAP Implementation:** If using on-chain prices, does the oracle implement
+  Time-Weighted Average Price (TWAP) over a sufficient window (e.g., ≥30
+  minutes)? A single-block spot price is trivially manipulable; TWAP requires
+  sustained manipulation across many blocks, raising attack cost.
+- **Manipulation Detection:** Does the provider monitor for price manipulation
+  attempts (sudden large deviations, wash trading patterns) and have procedures
+  to pause or revert suspicious updates?
+- **Historical Consistency:** For DEX-based oracles, what safeguards exist
+  against flash loan attacks that could temporarily distort prices within a
+  single transaction?
+
+**Governance Policy:** ILN governance should reject any `Price` feed proposal
+that uses on-chain DEX spot prices without TWAP protection or equivalent
+manipulation resistance. See [threat-model.md §D3](../threat-model.md#d3-price-oracle-sandwich-attacks-issue-39)
+for the full risk analysis.
+
+### 2.7 Economic & operational disclosure
 
 - Any fees charged for querying or maintaining the feed, and who bears them.
 - Any jurisdictional or regulatory exposure worth flagging for voters
@@ -153,6 +183,7 @@ Proposers should be able to check every applicable box before submitting a
 - [ ] `interface_version()` value confirmed and interface methods manually reviewed
 - [ ] Oracle contract upgradeability and upgrade-authority documented
 - [ ] Oracle contract admin/operator key custody documented
+- [ ] **For Price feeds only:** Sandwich attack resistance documented (data source type, TWAP if DEX-based)
 - [ ] Fee structure disclosed, if any
 
 ---
@@ -195,7 +226,11 @@ do not omit this section>
 <Contract upgradeability and upgrade authority, admin/operator key custody,
 any fees>
 
-### 6. Links
+### 6. Sandwich Attack Resistance (Price feeds only)
+<For Price feed proposals only: data source type, TWAP implementation if DEX-based,
+manipulation detection mechanisms, historical consistency safeguards>
+
+### 7. Links
 - Audit report(s):
 - Provider documentation:
 - Contract source / verification (e.g. Stellar Expert):

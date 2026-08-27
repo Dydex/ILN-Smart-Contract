@@ -434,6 +434,62 @@ The contract has no integration with external credit oracles. Payer reputation i
 - Consider integration with Stellar-native identity protocols in future versions
 - Publish recommended LP risk management guidelines
 
+#### D3. Price Oracle Sandwich Attacks (Issue 39)
+
+**Description:**  
+The contract uses price oracles for USD volume normalization in contract statistics. Any operation that reads an oracle price and then acts on it within the same or adjacent transactions could be sandwiched if the oracle price derives from an on-chain DEX rather than an off-chain feed.
+
+**Attack Scenario:**
+```
+1. Price oracle uses on-chain DEX spot prices (e.g., Stellar DEX, AMM pools)
+2. Attacker observes pending `get_contract_stats()` or other price-dependent operation
+3. Attaker front-runs with large swap to manipulate DEX price
+4. Oracle reads manipulated price for USD normalization
+5. Contract statistics report incorrect USD volume
+6. While not directly financial, this affects:
+   - Protocol analytics and monitoring accuracy
+   - LP decision-making based on volume metrics
+   - Potential governance decisions based on incorrect stats
+```
+
+**Current Mitigation:**
+- ✅ **Statistical Use Only:** Price oracle currently used only for volume normalization in `get_contract_stats()`
+- ✅ **No Financial Dependence:** No financial operations (funding, payments) depend on price oracle
+- ✅ **Governance Control:** Oracle registration is governance-controlled via `register_oracle()`
+- ✅ **Provider Vetting:** `oracle-provider-vetting.md` provides criteria for evaluating oracle providers
+
+**Code Evidence:** [get_price_from_oracle() in invoice.rs](contracts/invoice_liquidity/src/invoice.rs#L874-L880)
+```rust
+fn get_price_from_oracle(env: &Env, token: &Address) -> Option<i128> {
+    let config = crate::storage::get_config(env)?;
+    let oracle = config.price_oracle?;
+    let args = soroban_sdk::vec![env, token.clone().into_val(env)];
+    Some(env.invoke_contract::<i128>(&oracle, &Symbol::new(env, "get_price"), args))
+}
+```
+
+**Residual Risk:** ⚠️ **MEDIUM-HIGH** (if using on-chain DEX prices)
+- Current test implementations use mock data (`MockPriceOracle` in tests)
+- Production oracle source undefined - depends on governance-approved providers
+- **HIGH risk** if price oracle uses DEX spot prices without TWAP protection
+- **LOW risk** if using off-chain signed price feeds (Chainlink, Pyth, etc.)
+- Future protocol expansions could introduce price-dependent financial operations
+
+**Recommendation:**
+- **Mandatory:** Update `oracle-provider-vetting.md` to explicitly require:
+  - Price feed oracles must use manipulation-resistant sources (TWAP, off-chain feeds)
+  - Prohibits DEX spot price oracles without TWAP protection
+- **Governance Policy:** Establish that only price oracles with these properties are approved:
+  - TWAP (Time-Weighted Average Price) mechanisms for any DEX-based oracle
+  - Off-chain signed price feeds with multi-signer aggregation
+  - Multi-source aggregation with outlier rejection
+- **Technical Implementation:** If DEX prices are needed, require TWAP interface:
+  ```rust
+  // Example TWAP interface for oracle providers
+  fn get_price_twap(env: Env, token: Address, window_seconds: u64) -> i128;
+  ```
+- **Monitoring:** Enhance `check_oracle_health()` to track price volatility and manipulation detection
+
 ---
 
 ### E. GOVERNANCE ATTACKS
