@@ -445,22 +445,61 @@ The contract has no integration with external credit oracles. Payer reputation i
 - Consider integration with Stellar-native identity protocols in future versions
 - Publish recommended LP risk management guidelines
 
-#### D3. Payer-Verification Oracle Manipulation (Economic Model)
+#### D3. Price Oracle Sandwich Attacks (Issue 39)
 
-**Description:**
-Unlike D1/D2 above, ILN *does* ship a real external oracle interface: `fund_invoice`'s `require_oracle_verification` flag queries a governance-registered `Identity`-feed oracle (`oracle_registry.rs`) for a boolean `is_verified` attestation on the payer. That oracle is a single trusted address with no stake, no bond, and no multi-source quorum — see [`docs/oracle-attack-economics.md`](oracle-attack-economics.md) for the full model.
+**Description:**  
+The contract uses price oracles for USD volume normalization in contract statistics. Any operation that reads an oracle price and then acts on it within the same or adjacent transactions could be sandwiched if the oracle price derives from an on-chain DEX rather than an off-chain feed.
 
-**Attack Scenario:** an attacker who controls or has compromised the registered oracle (or controls a legitimately-registered-then-turned-malicious vendor) makes `get_payer_data` falsely report `is_verified: true` for a colluding/fabricated payer, inducing an LP who opted into oracle verification to fund a fraudulent invoice. The attacker collects the freelancer payout; the payer never repays.
+**Attack Scenario:**
+```
+1. Price oracle uses on-chain DEX spot prices (e.g., Stellar DEX, AMM pools)
+2. Attacker observes pending `get_contract_stats()` or other price-dependent operation
+3. Attaker front-runs with large swap to manipulate DEX price
+4. Oracle reads manipulated price for USD normalization
+5. Contract statistics report incorrect USD volume
+6. While not directly financial, this affects:
+   - Protocol analytics and monitoring accuracy
+   - LP decision-making based on volume metrics
+   - Potential governance decisions based on incorrect stats
+```
 
 **Current Mitigation:**
-- ✅ **Opt-in:** `require_oracle_verification` is chosen per-call by the funding LP, not enforced protocol-wide
-- ✅ **Freshness check:** stale data (older than `max_oracle_age_ledgers`, default ~24h) is rejected — bounds the narrower "honest oracle goes stale" sub-case only, not a fully compromised oracle actively reporting fresh false data
-- ✅ **`pause()`:** instant, admin-only circuit breaker halts all funding while an incident is investigated
-- ⚠️ **Governance-gated registration/removal:** raises the bar for who can register an oracle, but removal in the fully decentralized end-state (admin = governance contract) has a multi-day floor (3-day voting window minimum) — see the economic model's §5.2
+- ✅ **Statistical Use Only:** Price oracle currently used only for volume normalization in `get_contract_stats()`
+- ✅ **No Financial Dependence:** No financial operations (funding, payments) depend on price oracle
+- ✅ **Governance Control:** Oracle registration is governance-controlled via `register_oracle()`
+- ✅ **Provider Vetting:** `oracle-provider-vetting.md` provides criteria for evaluating oracle providers
 
-**Residual Risk:** 🔴 **HIGH** — [oracle-attack-economics.md §7](oracle-attack-economics.md#7-findings) finds the attack cost is flat and near-zero while extractable value is unbounded (no maximum invoice amount exists in the contract) and scales with invoice size, invoice count, and the governance-removal exposure window. The worked example (§5.3) shows a clearly profitable attack at realistic invoice sizes, not just a theoretical edge case.
+**Code Evidence:** [get_price_from_oracle() in invoice.rs](contracts/invoice_liquidity/src/invoice.rs#L874-L880)
+```rust
+fn get_price_from_oracle(env: &Env, token: &Address) -> Option<i128> {
+    let config = crate::storage::get_config(env)?;
+    let oracle = config.price_oracle?;
+    let args = soroban_sdk::vec![env, token.clone().into_val(env)];
+    Some(env.invoke_contract::<i128>(&oracle, &Symbol::new(env, "get_price"), args))
+}
+```
 
-**Recommendation:** see [oracle-attack-economics.md §8](oracle-attack-economics.md#8-recommended-parameter-and-design-adjustments) — highest-priority items are adding a maximum per-invoice funding cap and oracle staking/slashing, both currently absent.
+**Residual Risk:** ⚠️ **MEDIUM-HIGH** (if using on-chain DEX prices)
+- Current test implementations use mock data (`MockPriceOracle` in tests)
+- Production oracle source undefined - depends on governance-approved providers
+- **HIGH risk** if price oracle uses DEX spot prices without TWAP protection
+- **LOW risk** if using off-chain signed price feeds (Chainlink, Pyth, etc.)
+- Future protocol expansions could introduce price-dependent financial operations
+
+**Recommendation:**
+- **Mandatory:** Update `oracle-provider-vetting.md` to explicitly require:
+  - Price feed oracles must use manipulation-resistant sources (TWAP, off-chain feeds)
+  - Prohibits DEX spot price oracles without TWAP protection
+- **Governance Policy:** Establish that only price oracles with these properties are approved:
+  - TWAP (Time-Weighted Average Price) mechanisms for any DEX-based oracle
+  - Off-chain signed price feeds with multi-signer aggregation
+  - Multi-source aggregation with outlier rejection
+- **Technical Implementation:** If DEX prices are needed, require TWAP interface:
+  ```rust
+  // Example TWAP interface for oracle providers
+  fn get_price_twap(env: Env, token: Address, window_seconds: u64) -> i128;
+  ```
+- **Monitoring:** Enhance `check_oracle_health()` to track price volatility and manipulation detection
 
 ---
 

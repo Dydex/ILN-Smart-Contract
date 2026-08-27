@@ -1,0 +1,25 @@
+[package]
+name = "twap_oracle_example"
+version = "0.1.0"
+description = "Example TWAP (Time-Weighted Average Price) Oracle Implementation"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = "27.0.0"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = false
+strip = "symbols"
+panic = "abort"
+codegen-units = 1
+lto = true
+
+[profile.release-with-logs]
+inherits = "release"
+debug = true
