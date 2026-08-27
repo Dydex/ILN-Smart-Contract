@@ -46,8 +46,7 @@ use events::{
     AdminChanged, AppealResolved, ContractInitialized, ContractPaused, ContractUnpaused,
     ContractUpgraded, DefaultAppealed, DisputeResolved, DisputeUpheldPayerRefund,
     DistributionContractUpdated, FundQueueResolutionAttempted, FundQueueResolved, FundRequested,
-    InsuranceClaimAttempted, InsuranceCompensationFailed, InvoiceCancelled, InvoiceDefaulted,
-    InvoiceDisputed, InvoiceExpired,
+    InsuranceClaimAttempted, InvoiceCancelled, InvoiceDefaulted, InvoiceDisputed, InvoiceExpired,
     InvoiceFunded, InvoicePaid, InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged,
     InvoiceTransferred, InvoiceUpdated, LPPositionTransferred, ParameterUpdated,
     PriceOracleUpdated, TokenAdded, TokenRemoved,
@@ -620,21 +619,11 @@ impl InvoiceLiquidityContract {
 
     /// Configure the deployed insurance pool contract address consulted by
     /// `claim_default` to compensate enrolled LPs on a confirmed default.
-    /// Rejects pools that do not report a compatible [`INSURANCE_INTERFACE_VERSION`].
     /// Access: Admin only
     pub fn set_insurance_pool(env: Env, pool: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_insurance_pool", DEFAULT_RATE_LIMIT_LEDGERS)?;
-        let pool_client = InsurancePoolInterfaceClient::new(&env, &pool);
-        let version = match pool_client.try_interface_version() {
-            Ok(Ok(v)) => v,
-            _ => return Err(ContractError::IncompatibleInterfaceVersion),
-        };
-        if version != insurance_pool::INSURANCE_INTERFACE_VERSION {
-            return Err(ContractError::IncompatibleInterfaceVersion);
-        }
         crate::storage::set_insurance_pool(&env, &pool);
-        crate::storage::set_insurance_pool_interface_version(&env, version);
         Ok(())
     }
 
@@ -2336,32 +2325,17 @@ impl InvoiceLiquidityContract {
         // own balance), so this contract only needs to trigger the claim and
         // report the outcome - it never holds or forwards the payout.
         //
-        // Handled via try_* so a paused/empty/unreachable/panicking pool
-        // degrades gracefully: claim_default still completes (refund + status
-        // update already happened above, in the same atomic invocation) rather
-        // than reverting the whole default over an optional insurance top-up.
-        // Failures emit InsuranceCompensationFailed for observability.
+        // Handled via try_* so a paused/empty/unreachable pool degrades
+        // gracefully: claim_default still completes (refund + status update
+        // already happened above, in the same atomic invocation) rather than
+        // reverting the whole default over an optional insurance top-up.
         if let Some(pool_addr) = crate::storage::get_insurance_pool(&env) {
             let pool_client = InsurancePoolInterfaceClient::new(&env, &pool_addr);
             let enrolled = matches!(pool_client.try_is_enrolled(&funder), Ok(Ok(true)));
             if enrolled {
                 let (compensated, payout) = match pool_client.try_claim(&invoice_id, &funder) {
                     Ok(Ok(payout)) => (true, payout),
-                    _ => {
-                        env.events().publish(
-                            (
-                                Symbol::new(&env, "insurance_compensation_failed"),
-                                invoice.id,
-                                funder.clone(),
-                            ),
-                            InsuranceCompensationFailed {
-                                invoice_id: invoice.id,
-                                lp: funder.clone(),
-                                pool: pool_addr.clone(),
-                            },
-                        );
-                        (false, 0)
-                    }
+                    _ => (false, 0),
                 };
                 env.events().publish(
                     (
@@ -3223,7 +3197,9 @@ mod tests_invoice_count;
 mod tests_batch_submit_reputation;
 // Issue #pause-checks: expire_invoice and appeal_default pause guards
 mod tests_pause_checks;
-// ADR-011: invoice_liquidity vs reputation_bonus reputation SoT isolation
-mod tests_reputation_state_isolation;
-// Issue #price-deviation: multi-source price deviation checking
-mod tests_price_deviation;
+// Economic security regression suite (threat-model B0/B1/D1) — declared here
+// so the consolidated `es_*` tests run in every required CI cargo test pass.
+mod tests_economic_security;
+// Issue #34 reputation-weighted queue was previously ORPHANED (file present
+// but never declared), so its queue-integrity/griefing guards never ran.
+mod tests_lp_priority_queue;

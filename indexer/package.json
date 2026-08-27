@@ -13,7 +13,12 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist coverage node_modules/.cache"
+    "backup": "tsx scripts/backup.ts",
+    "restore": "tsx scripts/restore.ts",
+    "verify-restore": "tsx scripts/verify-restore.ts",
+    "reconcile": "tsx scripts/reconcile.ts",
+    "replay": "tsx scripts/replay.ts",
+    "clean": "rm -rf dist coverage node_modules/.cache backups restored"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^16.0.1",
