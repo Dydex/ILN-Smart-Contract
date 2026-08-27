@@ -694,3 +694,296 @@ fn test_oracle_registry_mutations_unaffected_by_core_contract_pause() {
         "removing the feed-type default must succeed while paused"
     );
 }
+
+// ── Circuit breaker ────────────────────────────────────────────────────────────
+//
+// check_oracle_health / consecutive_stale_count already existed (Issue
+// #532) but nothing acted on repeated staleness — funding kept being
+// attempted against a degraded oracle indefinitely. This section covers:
+//   1. Automatically tripping the breaker after
+//      MAX_CONSECUTIVE_STALE_QUERIES consecutive stale observations.
+//   2. fund_invoice falling back through the priority chain past a tripped
+//      level, or rejecting outright with ContractError::OracleCircuitOpen
+//      when no fallback exists.
+//   3. Governance-only reset — no auto-recovery on a single fresh query,
+//      to avoid flapping.
+
+/// Registers `oracle` as the Identity feed-type default and advances the
+/// ledger far enough past `max_age` (already lowered to 10 by the caller
+/// via `set_max_oracle_age`) that it reads as stale on every subsequent
+/// query, without needing to touch the oracle's own timestamp again.
+fn setup_stale_default_oracle(t: &crate::test::TestEnv) -> Address {
+    advance_past_rate_limit_cooldown(&t.env);
+    t.contract.set_max_oracle_age(&10);
+
+    let old_seq = t.env.ledger().sequence();
+    let oracle = deploy_mock_oracle(t, true, old_seq);
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle);
+
+    let mut info = t.env.ledger().get();
+    info.sequence_number += 20;
+    info.timestamp += 20 * 5;
+    t.env.ledger().set(info);
+
+    oracle
+}
+
+#[test]
+fn test_circuit_trips_after_max_consecutive_stale_queries() {
+    let t = setup();
+    setup_stale_default_oracle(&t);
+
+    assert!(!t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+
+    // Two stale queries: below the MAX_CONSECUTIVE_STALE_QUERIES=3 threshold.
+    t.contract
+        .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer);
+    t.contract
+        .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer);
+    assert!(
+        !t.contract
+            .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address),
+        "circuit must not trip before the threshold is reached"
+    );
+
+    // Third consecutive stale query crosses the threshold and trips it.
+    let health = t
+        .contract
+        .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer)
+        .unwrap();
+    assert_eq!(health.consecutive_stale_count, 3);
+    assert!(t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+
+    // Further stale queries keep it tripped (idempotent) — the streak keeps
+    // climbing for observability, but nothing re-fires on an already-open
+    // breaker.
+    let health = t
+        .contract
+        .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer)
+        .unwrap();
+    assert_eq!(health.consecutive_stale_count, 4);
+    assert!(t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+}
+
+#[test]
+fn test_fund_invoice_rejects_when_circuit_open_with_no_fallback() {
+    let t = setup();
+    setup_stale_default_oracle(&t);
+
+    // Only the feed-type default is registered — no per-token override, no
+    // legacy price_oracle — so there's nothing to fall back to once it trips.
+    for _ in 0..3 {
+        t.contract
+            .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer);
+    }
+    assert!(t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+
+    let invoice_id = make_invoice(&t);
+    let result =
+        t.contract
+            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        result,
+        Err(Ok(ContractError::OracleCircuitOpen)),
+        "fund_invoice must reject oracle-gated funding rather than silently proceeding \
+         once the only registered oracle is circuit-tripped"
+    );
+}
+
+#[test]
+fn test_fund_invoice_falls_back_to_feed_type_default_when_override_tripped() {
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    t.contract.set_max_oracle_age(&10);
+
+    // A healthy feed-type-wide default...
+    let good_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &good_oracle);
+
+    // ...and a per-token override (higher priority) that will go stale.
+    let bad_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract.register_token_oracle(
+        &OracleFeedType::Identity,
+        &t.token.address,
+        &bad_oracle,
+    );
+
+    // Advance the ledger so the override's timestamp reads as stale.
+    let mut info = t.env.ledger().get();
+    info.sequence_number += 20;
+    info.timestamp += 20 * 5;
+    t.env.ledger().set(info);
+
+    // Refresh the default's timestamp so it stays fresh despite the same
+    // ledger advance (it was deployed at the same original timestamp).
+    let good_client = MockRegistryOracleClient::new(&t.env, &good_oracle);
+    good_client.set_response(&true, &t.env.ledger().sequence());
+
+    // check_oracle_health always observes the highest-priority (override)
+    // entry via the plain, circuit-agnostic resolve_oracle — three
+    // consecutive stale queries against it trips the breaker.
+    for _ in 0..3 {
+        t.contract
+            .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer);
+    }
+    assert!(t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+
+    // fund_invoice's oracle-gated verification must now skip the tripped
+    // override and fall back to the healthy feed-type default, rather than
+    // rejecting the funding.
+    let invoice_id = make_invoice(&t);
+    let result =
+        t.contract
+            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert!(
+        result.is_ok(),
+        "fund_invoice must fall back to the healthy feed-type default when the \
+         per-token override is circuit-tripped, per the documented priority order"
+    );
+}
+
+#[test]
+fn test_reset_oracle_circuit_requires_admin() {
+    let (env, _admin, token_address, client) = setup_env_no_mock_auths();
+    let imposter = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &imposter,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "reset_oracle_circuit",
+            args: (OracleFeedType::Identity, token_address.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_reset_oracle_circuit(&OracleFeedType::Identity, &token_address);
+    assert!(
+        res.is_err(),
+        "reset_oracle_circuit should fail for non-admin caller"
+    );
+}
+
+#[test]
+fn test_reset_oracle_circuit_clears_flag_and_restores_verification() {
+    let t = setup();
+    let oracle = setup_stale_default_oracle(&t);
+
+    for _ in 0..3 {
+        t.contract
+            .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer);
+    }
+    assert!(t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+
+    t.contract
+        .reset_oracle_circuit(&OracleFeedType::Identity, &t.token.address);
+    assert!(!t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+
+    // Refresh the oracle so it's fresh again, then confirm funding resumes
+    // against it directly — no fallback needed, no rejection.
+    let oracle_client = MockRegistryOracleClient::new(&t.env, &oracle);
+    oracle_client.set_response(&true, &t.env.ledger().sequence());
+
+    let invoice_id = make_invoice(&t);
+    let result =
+        t.contract
+            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert!(
+        result.is_ok(),
+        "funding must resume against the original oracle once governance resets the circuit"
+    );
+}
+
+#[test]
+fn test_circuit_does_not_auto_recover_on_single_fresh_query() {
+    let t = setup();
+    let oracle = setup_stale_default_oracle(&t);
+
+    for _ in 0..3 {
+        t.contract
+            .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer);
+    }
+    assert!(t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+
+    // The oracle recovers and starts answering fresh again...
+    let oracle_client = MockRegistryOracleClient::new(&t.env, &oracle);
+    oracle_client.set_response(&true, &t.env.ledger().sequence());
+    let health = t
+        .contract
+        .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer)
+        .unwrap();
+    assert!(!health.is_stale);
+    assert_eq!(health.consecutive_stale_count, 0);
+
+    // ...but the circuit stays tripped regardless — no auto-recovery on a
+    // single fresh query, to avoid flapping.
+    assert!(
+        t.contract
+            .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address),
+        "a single fresh query must not auto-clear the circuit breaker"
+    );
+
+    // Oracle-gated funding is still rejected (no fallback registered) even
+    // though the underlying oracle is, right now, reporting fresh data.
+    let invoice_id = make_invoice(&t);
+    let result =
+        t.contract
+            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(result, Err(Ok(ContractError::OracleCircuitOpen)));
+}
+
+#[test]
+fn test_circuit_retrips_immediately_if_still_stale_right_after_reset() {
+    let t = setup();
+    setup_stale_default_oracle(&t);
+
+    for _ in 0..3 {
+        t.contract
+            .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer);
+    }
+    assert!(t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+
+    // Governance resets — but the oracle's own data hasn't actually
+    // changed, it's still the same stale timestamp.
+    t.contract
+        .reset_oracle_circuit(&OracleFeedType::Identity, &t.token.address);
+    assert!(!t
+        .contract
+        .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
+
+    // The very next query is still stale — this must re-trip immediately,
+    // not require MAX_CONSECUTIVE_STALE_QUERIES more failures: the raw
+    // streak counter is untouched by reset_oracle_circuit (only the sticky
+    // flag is cleared), so it never dipped below threshold across the reset.
+    let health = t
+        .contract
+        .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer)
+        .unwrap();
+    assert!(health.is_stale);
+    assert!(
+        t.contract
+            .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address),
+        "a still-stale oracle must re-trip immediately after a reset, not require \
+         a fresh multi-query streak on top of the pre-existing one"
+    );
+}

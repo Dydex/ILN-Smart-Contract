@@ -528,6 +528,94 @@ impl InvoiceLiquidityContract {
         oracle_registry::check_oracle_health(env, feed_type, token, payer)
     }
 
+    /// Whether the oracle circuit breaker for `feed_type` + `token` is
+    /// currently tripped (from `MAX_CONSECUTIVE_STALE_QUERIES` consecutive
+    /// stale responses) and therefore excluded from `fund_invoice`'s
+    /// oracle-gated resolution until governance calls
+    /// `reset_oracle_circuit`.
+    /// Access: Anyone
+    pub fn is_oracle_circuit_tripped(env: Env, feed_type: OracleFeedType, token: Address) -> bool {
+        oracle_registry::is_oracle_circuit_tripped(&env, feed_type, &token)
+    }
+
+    /// Reset a tripped oracle circuit breaker for `feed_type` + `token`.
+    /// There is no automatic recovery on a single fresh query — this
+    /// explicit, governance-gated call is required, so a flapping oracle
+    /// can't quietly resume being trusted by the funding path.
+    /// Access: Admin only (governance-controlled via cross-contract proposal
+    /// execution, same pattern as `register_oracle` / `remove_oracle`).
+    pub fn reset_oracle_circuit(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::reset_oracle_circuit(&env, feed_type, token)
+    }
+
+    // ── Issue #price-deviation: multi-source price deviation checking ──
+
+    /// Register `oracle` as an additional price source for `feed_type`.
+    /// Distinct from `register_oracle`/`register_token_oracle` (the
+    /// single-oracle model for boolean payer verification): multiple price
+    /// sources can be registered per feed type so `get_verified_price` can
+    /// cross-check them against each other.
+    /// Access: Admin only (governance-controlled via cross-contract proposal
+    /// execution, same pattern as `register_oracle`).
+    pub fn add_price_source(
+        env: Env,
+        feed_type: OracleFeedType,
+        oracle: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::add_price_source(&env, feed_type, oracle)
+    }
+
+    /// Remove `oracle` from `feed_type`'s price source list.
+    /// Access: Admin only.
+    pub fn remove_price_source(
+        env: Env,
+        feed_type: OracleFeedType,
+        oracle: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::remove_price_source(&env, feed_type, oracle)
+    }
+
+    /// The currently registered price sources for `feed_type`.
+    /// Access: Anyone
+    pub fn get_price_sources(env: Env, feed_type: OracleFeedType) -> soroban_sdk::Vec<Address> {
+        oracle_registry::get_price_sources(env, feed_type)
+    }
+
+    /// Update the governance-configurable maximum deviation (basis points)
+    /// a price source may differ from the cross-source median before being
+    /// rejected as an outlier. Default is
+    /// [`oracle_registry::DEFAULT_MAX_PRICE_DEVIATION_BPS`] (5%) until set.
+    /// Access: Admin only.
+    pub fn set_max_price_deviation_bps(env: Env, bps: u32) -> Result<(), ContractError> {
+        oracle_registry::set_max_price_deviation_bps(&env, bps)
+    }
+
+    /// The currently configured maximum price deviation, in basis points.
+    /// Access: Anyone
+    pub fn get_max_price_deviation_bps(env: Env) -> u32 {
+        oracle_registry::get_max_price_deviation_bps(env)
+    }
+
+    /// Query every registered price source for `feed_type` + `token` and
+    /// return a cross-validated price. With zero sources, errors; with
+    /// exactly one, returns it unchecked (documented single-source risk —
+    /// see `oracle_registry`'s module docs); with two or more, rejects any
+    /// source deviating from the cross-source median beyond
+    /// `get_max_price_deviation_bps()` and returns the median of the
+    /// survivors.
+    /// Access: Anyone
+    pub fn get_verified_price(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+    ) -> Result<i128, ContractError> {
+        oracle_registry::get_verified_price(env, feed_type, token)
+    }
+
     // ── Issue #529: insurance pool integration ────────────────────
 
     /// Configure the deployed insurance pool contract address consulted by
@@ -1507,16 +1595,26 @@ impl InvoiceLiquidityContract {
             return Err(ContractError::PayerReputationTooLow);
         }
 
-        // Issues #92 + #93 + #532: optional oracle verification with a
-        // data-freshness guard. When require_oracle_verification is true,
-        // the oracle registry is queried for the Identity feed, resolved per
-        // the invoice's token (per-token override, then feed-type default,
-        // then the legacy price_oracle config field). If no oracle resolves,
-        // the flag is a no-op.
+        // Issues #92 + #93 + #532 + circuit-breaker: optional oracle
+        // verification with a data-freshness guard. When
+        // require_oracle_verification is true, the oracle registry is
+        // queried for the Identity feed, resolved per the invoice's token
+        // (per-token override, then feed-type default, then the legacy
+        // price_oracle config field) — skipping any level that's
+        // circuit-tripped from repeated staleness. If nothing was ever
+        // registered, the flag is a no-op (existing fail-open behavior). If
+        // everything registered is circuit-tripped, funding is rejected
+        // rather than silently proceeding as if no oracle existed.
         if require_oracle_verification {
-            if let Some(oracle_addr) =
-                oracle_registry::resolve_oracle(&env, OracleFeedType::Identity, &invoice.token)
-            {
+            let resolution = oracle_registry::resolve_oracle_for_verification(
+                &env,
+                OracleFeedType::Identity,
+                &invoice.token,
+            );
+            if resolution == oracle_registry::OracleResolution::CircuitOpen {
+                return Err(ContractError::OracleCircuitOpen);
+            }
+            if let oracle_registry::OracleResolution::Available(oracle_addr) = resolution {
                 let response: OracleVerificationResponse = env.invoke_contract(
                     &oracle_addr,
                     &Symbol::new(&env, "get_payer_data"),
@@ -3127,3 +3225,5 @@ mod tests_batch_submit_reputation;
 mod tests_pause_checks;
 // ADR-011: invoice_liquidity vs reputation_bonus reputation SoT isolation
 mod tests_reputation_state_isolation;
+// Issue #price-deviation: multi-source price deviation checking
+mod tests_price_deviation;

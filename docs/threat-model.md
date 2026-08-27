@@ -361,6 +361,17 @@ if env.ledger().sequence() > invoice.due_date_ledger + appeal_window_ledgers {
 
 ### D. ORACLE MANIPULATION ATTACKS
 
+> **⚠️ Pending re-review (Issue #39):** D1/D2 below predate the payer-verification
+> oracle interface and governance-controlled oracle registry (Issue #93/#532) —
+> D2 in particular states "no integration with external credit oracles," which
+> is no longer accurate now that `oracle_interface.rs`/`oracle_registry.rs`
+> exist and are live in `fund_invoice`. A full re-review of this section is
+> tracked as Issue #39. In the meantime, see
+> [**D3 below**](#d3-payer-verification-oracle-manipulation-economic-model)
+> and [`docs/oracle-attack-economics.md`](oracle-attack-economics.md) for a
+> quantified cost/benefit model of manipulating the oracle that actually ships
+> today.
+
 #### D1. Reputation Score Manipulation
 
 **Description:**  
@@ -433,6 +444,23 @@ The contract has no integration with external credit oracles. Payer reputation i
 - Recommend LP due diligence on payers (KYC checks, external credit reports)
 - Consider integration with Stellar-native identity protocols in future versions
 - Publish recommended LP risk management guidelines
+
+#### D3. Payer-Verification Oracle Manipulation (Economic Model)
+
+**Description:**
+Unlike D1/D2 above, ILN *does* ship a real external oracle interface: `fund_invoice`'s `require_oracle_verification` flag queries a governance-registered `Identity`-feed oracle (`oracle_registry.rs`) for a boolean `is_verified` attestation on the payer. That oracle is a single trusted address with no stake, no bond, and no multi-source quorum — see [`docs/oracle-attack-economics.md`](oracle-attack-economics.md) for the full model.
+
+**Attack Scenario:** an attacker who controls or has compromised the registered oracle (or controls a legitimately-registered-then-turned-malicious vendor) makes `get_payer_data` falsely report `is_verified: true` for a colluding/fabricated payer, inducing an LP who opted into oracle verification to fund a fraudulent invoice. The attacker collects the freelancer payout; the payer never repays.
+
+**Current Mitigation:**
+- ✅ **Opt-in:** `require_oracle_verification` is chosen per-call by the funding LP, not enforced protocol-wide
+- ✅ **Freshness check:** stale data (older than `max_oracle_age_ledgers`, default ~24h) is rejected — bounds the narrower "honest oracle goes stale" sub-case only, not a fully compromised oracle actively reporting fresh false data
+- ✅ **`pause()`:** instant, admin-only circuit breaker halts all funding while an incident is investigated
+- ⚠️ **Governance-gated registration/removal:** raises the bar for who can register an oracle, but removal in the fully decentralized end-state (admin = governance contract) has a multi-day floor (3-day voting window minimum) — see the economic model's §5.2
+
+**Residual Risk:** 🔴 **HIGH** — [oracle-attack-economics.md §7](oracle-attack-economics.md#7-findings) finds the attack cost is flat and near-zero while extractable value is unbounded (no maximum invoice amount exists in the contract) and scales with invoice size, invoice count, and the governance-removal exposure window. The worked example (§5.3) shows a clearly profitable attack at realistic invoice sizes, not just a theoretical edge case.
+
+**Recommendation:** see [oracle-attack-economics.md §8](oracle-attack-economics.md#8-recommended-parameter-and-design-adjustments) — highest-priority items are adding a maximum per-invoice funding cap and oracle staking/slashing, both currently absent.
 
 ---
 
@@ -761,6 +789,7 @@ The pool accepts claims up to enrolled capacity. If claim frequency exceeds proj
 | **Appeal Window Bypass** | MEDIUM | Ledger sequence windows | LOW (cryptographically protected) |
 | **Reputation Sybil Attack** | MEDIUM | Decay mechanism, admin oversight | MEDIUM (no external oracle) |
 | **Missing Credit Oracle** | HIGH | None (design limitation) | HIGH (LPs assume all risk) |
+| **Payer-Verification Oracle Manipulation (D3)** | HIGH | Opt-in verification, freshness window, `pause()`, governance-gated registration | HIGH (no oracle stake/quorum, no max invoice cap — see [oracle-attack-economics.md](oracle-attack-economics.md)) |
 | **Admin Key Compromise** | CRITICAL | Require auth, public events | CRITICAL (single point of failure) |
 | **Parameter Misconfiguration** | MEDIUM | Bounds checks (partial) | MEDIUM (incomplete validation) |
 | **Token Transfer Failure** | MEDIUM | Atomic transactions | LOW (Soroban guarantees) |

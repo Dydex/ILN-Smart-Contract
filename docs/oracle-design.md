@@ -35,10 +35,10 @@ This design keeps the oracle stateless from ILN's perspective and avoids the com
 
 ## Trust Model
 
-- A single oracle address is stored in `Config.price_oracle` (shared with the price oracle slot for MVP simplicity).
-- The oracle address is set by the ILN admin via `set_price_oracle(oracle_address)` in a separate transaction after `initialize()`.
-- The oracle contract is fully trusted once registered — ILN does not validate oracle operator identity beyond the on-chain address.
-- **Future work**: multi-oracle quorum (e.g., require 2-of-3 oracles to agree) is out of scope for this design.
+- A single oracle address is stored in `Config.price_oracle` (shared with the price oracle slot for MVP simplicity), or, since Issue #532, resolved through the governance-controlled per-feed-type/per-token registry in `oracle_registry.rs` (see [ADR-010](adr/ADR-010-oracle-registry.md)).
+- The oracle address is set by the ILN admin via `set_price_oracle(oracle_address)` (or `register_oracle`/`register_token_oracle`) in a separate transaction after `initialize()`.
+- The oracle contract is fully trusted once registered — ILN does not validate oracle operator identity beyond the on-chain address, **unless** multiple price sources are registered for a feed type, in which case cross-source deviation checking applies — see [Multi-Source Price Deviation Checking](#multi-source-price-deviation-checking-price-feed) below.
+- Full N-of-M consensus quorum (require agreement before accepting *any* value, as opposed to just filtering out disagreeing outliers) remains future work beyond what's described below.
 
 ---
 
@@ -69,6 +69,23 @@ where `now_seconds` comes from `env.ledger().timestamp()`.
 Oracle operators **must** refresh verification records at least every 7 days to keep payers active. The threshold can be tightened by changing the constant in a future contract upgrade if stricter freshness is required.
 
 ---
+
+## Multi-Source Price Deviation Checking (Price Feed)
+
+The single-oracle model above (one resolved address per feed type/token) has no defense against a single misbehaving or compromised oracle reporting a wildly incorrect **price** — there's nothing on-chain to compare it against. `oracle_registry.rs` addresses this with a separate, optional multi-source registration list specifically for numeric price data:
+
+- `add_price_source(feed_type, oracle)` / `remove_price_source(feed_type, oracle)` (admin-gated) maintain a list of price-reporting sources per feed type, independent of the single-oracle `register_oracle`/`register_token_oracle` registry used for boolean payer verification.
+- `get_verified_price(feed_type, token)` queries every registered source (via `get_price(token) -> i128`, dynamically invoked — a single non-responding or panicking source is excluded from the sample rather than failing the whole query) and:
+  - **Zero sources, or all queries failed:** returns an error (`NoPriceSource`).
+  - **Exactly one source:** returns its price **unchecked**.
+  - **Two or more sources:** computes the median of all successfully-queried prices, excludes any source deviating from that median beyond `get_max_price_deviation_bps()` (emitting `PriceOutlierRejected` per exclusion), and returns the median of the survivors — or `AllPriceSourcesRejected` if nothing survives.
+- The deviation threshold is governance-configurable via `set_max_price_deviation_bps` (default 500 bps / 5%), the same admin-gated, governance-controlled-in-production pattern used throughout this registry.
+
+### The single-source risk is explicit, not silent
+
+**If only one price source is registered for a feed type, there is no deviation protection, by construction — a lone source's report is trusted outright.** This is not an oversight or a gap to be closed later in this module; it is an accepted, unavoidable limitation of running a single-source price feed, identical in kind to the single-oracle payer-verification model's own single-point-of-failure risk (see [oracle-attack-economics.md](oracle-attack-economics.md) for that model's cost/benefit analysis, which compounds with this one). Deploying at least two independent, non-colluding price sources is what actually activates this section's protection. Governance and integrators should treat "only one price source registered" as a known, live risk to actively remediate (by registering additional sources), not a configuration that happens to work fine.
+
+A closely related, less obvious limitation: **with exactly two sources, a single outlier cannot be selectively identified.** The median of two values is their average, which sits equidistant from both by construction — an honest source and a lying source deviate from that average by the *same* amount, so past the threshold both are rejected together (`AllPriceSourcesRejected`) rather than the bad one being picked out. This is the safer failure mode (refusing to guess which of two disagreeing sources is right) but it means two sources alone don't provide the selective-outlier-rejection this section is otherwise designed for — three or more independent sources are needed for that.
 
 ## Security Considerations
 

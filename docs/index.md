@@ -42,6 +42,7 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Oracle Design](oracle-design.md) | Optional payer-verification oracle model. |
 | [Oracle Integration](oracle-integration.md) | Deploying and registering compatible oracles. |
 | [Oracle Provider Vetting](oracle-provider-vetting.md) | Governance vetting criteria and proposal template for approving oracle providers. |
+| [Oracle Attack Economics](oracle-attack-economics.md) | Cost/benefit model of oracle manipulation at current parameters, with recommendations. |
 
 ## Project Process
 

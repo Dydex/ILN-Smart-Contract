@@ -18,12 +18,16 @@ mod mock_token;
 use mock_token::{MockToken, MockTokenClient};
 
 use iln_governance::{
-    GovContract, GovContractClient, GovernanceError, ProposalAction, ProposalStatus,
+    GovContract, GovContractClient, GovernanceError, OracleFeedType as GovOracleFeedType,
+    ProposalAction, ProposalStatus,
 };
 use invoice_liquidity::{
-    ContractError, InvoiceLiquidityContract, InvoiceLiquidityContractClient, ReferralCode,
+    oracle_interface::ORACLE_INTERFACE_VERSION, oracle_registry::OracleFeedType as IlnOracleFeedType,
+    ContractError, InvoiceLiquidityContract, InvoiceLiquidityContractClient, InvoiceStatus,
+    OracleVerificationResponse, ReferralCode,
 };
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger},
     token::StellarAssetClient,
     Address, BytesN, Env,
@@ -36,6 +40,51 @@ const DISCOUNT_RATE: u32 = 300; // 3 %
 const DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30; // 30 days
 const LEDGER_TIMESTAMP: u64 = 1_700_000_000;
 const GOV_TOTAL_SUPPLY: i128 = 20_000; // seeded via initialize()'s gov_token_total_supply param
+
+// ── Mock oracle for the RegisterTokenOracle governance test ────────────────────
+//
+// Implements the same shape `fund_invoice`'s `require_oracle_verification`
+// path actually calls (`interface_version` + `get_payer_data` returning
+// `OracleVerificationResponse`) — mirroring
+// `tests_oracle_registry.rs::MockRegistryOracle` inside the invoice_liquidity
+// crate, redefined here since that one is `#[cfg(test)]`-internal and not
+// exported for use by this external integration-test crate.
+
+#[contract]
+struct MockRegistryOracle;
+
+#[contractimpl]
+impl MockRegistryOracle {
+    pub fn interface_version(_env: Env) -> u32 {
+        ORACLE_INTERFACE_VERSION
+    }
+
+    pub fn set_response(env: Env, verified: bool, ts: u32) {
+        env.storage()
+            .instance()
+            .set(&soroban_sdk::symbol_short!("verified"), &verified);
+        env.storage()
+            .instance()
+            .set(&soroban_sdk::symbol_short!("ts"), &ts);
+    }
+
+    pub fn get_payer_data(env: Env, _payer: Address) -> OracleVerificationResponse {
+        let is_verified: bool = env
+            .storage()
+            .instance()
+            .get(&soroban_sdk::symbol_short!("verified"))
+            .unwrap_or(true);
+        let timestamp: u32 = env
+            .storage()
+            .instance()
+            .get(&soroban_sdk::symbol_short!("ts"))
+            .unwrap_or(env.ledger().sequence());
+        OracleVerificationResponse {
+            is_verified,
+            timestamp,
+        }
+    }
+}
 
 struct GovIntegrationEnv {
     env: Env,
@@ -343,5 +392,116 @@ fn test_veto_proposal_prevents_execution() {
     assert_eq!(
         admin_balance, 0,
         "admin balance must be 0 — the vetoed fee-rate change must not have taken effect"
+    );
+}
+
+// ── Test 4 ────────────────────────────────────────────────────────────────────
+
+/// Full governance-gated production flow for a per-token oracle override:
+/// create a `RegisterTokenOracle` proposal, vote it through quorum, let the
+/// timelock elapse, execute it (`Active` -> `Passed` -> `Executed`), then
+/// confirm both that the ILN contract's oracle registry reflects it *and*
+/// that `fund_invoice()` actually queries the newly-registered oracle,
+/// rather than the proposal merely reaching `Executed` status without its
+/// cross-contract effect landing.
+///
+/// This closes the gap between `register_token_oracle`'s direct-admin-call
+/// unit tests (`contracts/invoice_liquidity/src/tests_oracle_registry.rs`,
+/// e.g. `test_register_token_oracle_unauthorized_caller`) and genuine
+/// governance-mediated production usage.
+#[test]
+fn test_register_token_oracle_via_governance_takes_effect_in_fund_invoice() {
+    let t = setup();
+
+    // Deploy a real oracle contract, not yet wired to the ILN contract.
+    let oracle_id = t.env.register_contract(None, MockRegistryOracle);
+    let oracle_client = MockRegistryOracleClient::new(&t.env, &oracle_id);
+
+    // Before the proposal: no oracle is registered for this token/feed, so
+    // require_oracle_verification is a no-op and funding succeeds freely.
+    let due_date = LEDGER_TIMESTAMP + DUE_DATE_OFFSET;
+    let invoice_before = t.iln.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due_date,
+        &DISCOUNT_RATE,
+        &t.payment_token_addr,
+        &ReferralCode::None,
+    );
+    let fund_before =
+        t.iln
+            .try_fund_invoice(&t.lp, &invoice_before, &INVOICE_AMOUNT, &true);
+    assert!(
+        fund_before.is_ok(),
+        "with no oracle registered yet, oracle verification must be a no-op"
+    );
+
+    // Governance proposal: register `oracle_id` as the Identity-feed
+    // per-token override for `payment_token_addr`.
+    let proposal_id = t.governance.create_proposal(
+        &t.voter,
+        &ProposalAction::RegisterTokenOracle(
+            GovOracleFeedType::Identity,
+            t.payment_token_addr.clone(),
+            oracle_id.clone(),
+        ),
+        &dummy_hash(&t.env),
+        &0_i128,
+    );
+
+    pass_and_execute(&t, proposal_id);
+
+    let p = t.governance.get_proposal(&proposal_id);
+    assert_eq!(p.status, ProposalStatus::Executed);
+
+    // The ILN contract's oracle registry now resolves this token to the
+    // governance-registered oracle — proving the proposal's cross-contract
+    // call actually landed, not just that the proposal itself reached
+    // `Executed`.
+    assert_eq!(
+        t.iln
+            .get_oracle_for_token(&IlnOracleFeedType::Identity, &t.payment_token_addr),
+        Some(oracle_id.clone())
+    );
+
+    // fund_invoice() genuinely queries it now: arm the oracle to report this
+    // payer as unverified (fresh timestamp — pass_and_execute advanced the
+    // ledger sequence, so a stale-from-before-the-proposal timestamp would
+    // wrongly trigger OracleDataStale instead of the PayerUnverified path
+    // this assertion is targeting).
+    oracle_client.set_response(&false, &t.env.ledger().sequence());
+    // The LP already spent most of its balance funding invoice_before above
+    // (setup() only mints enough for one invoice) — top up before funding a
+    // second one.
+    t.payment_token.mint(&t.lp, &INVOICE_AMOUNT);
+    let due_date_2 = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
+    let invoice_after = t.iln.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due_date_2,
+        &DISCOUNT_RATE,
+        &t.payment_token_addr,
+        &ReferralCode::None,
+    );
+    let rejected =
+        t.iln
+            .try_fund_invoice(&t.lp, &invoice_after, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        rejected,
+        Err(Ok(ContractError::PayerUnverified)),
+        "fund_invoice must consult the governance-registered oracle and reject an unverified payer"
+    );
+
+    // Flip the oracle's answer to verified (again with a fresh timestamp) —
+    // funding the same invoice now succeeds, confirming a live oracle read
+    // (not a cached/stale one) drives the outcome.
+    oracle_client.set_response(&true, &t.env.ledger().sequence());
+    t.iln
+        .fund_invoice(&t.lp, &invoice_after, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        t.iln.get_invoice(&invoice_after).status,
+        InvoiceStatus::Funded
     );
 }

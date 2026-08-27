@@ -34,6 +34,59 @@ pub struct OracleHealthRecorded {
     pub consecutive_stale_count: u32,
 }
 
+/// Emitted once when a feed type + token's oracle resolution channel is
+/// automatically circuit-tripped after `MAX_CONSECUTIVE_STALE_QUERIES`
+/// consecutive stale responses from the same oracle. `token` is included
+/// alongside the task-specified `feed_type`/`consecutive_stale_count`
+/// fields — matching `OracleHealthRecorded`'s shape — since a bare
+/// feed-type-only event wouldn't identify which resolution channel tripped
+/// in a deployment with multiple per-token overrides.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OracleCircuitTripped {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+    pub consecutive_stale_count: u32,
+}
+
+/// Emitted when governance resets a tripped oracle circuit breaker.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OracleCircuitReset {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+}
+
+/// Emitted when a price source is added to a feed type's multi-source list
+/// (Issue #price-deviation).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriceSourceAdded {
+    pub feed_type: OracleFeedType,
+    pub oracle: Address,
+}
+
+/// Emitted when a price source is removed from a feed type's multi-source list.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriceSourceRemoved {
+    pub feed_type: OracleFeedType,
+    pub oracle: Address,
+}
+
+/// Emitted when a registered price source's reported price is rejected as
+/// an outlier relative to the cross-source median (Issue #price-deviation).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriceOutlierRejected {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+    pub oracle: Address,
+    pub reported_price: i128,
+    pub median_price: i128,
+    pub deviation_bps: u32,
+}
+
 /// Emitted after `claim_default` attempts to compensate the claiming LP from
 /// the configured insurance pool. `compensated` is `false` when the LP
 /// wasn't enrolled, no pool is configured, or the pool call failed/was

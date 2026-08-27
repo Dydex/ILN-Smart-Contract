@@ -111,6 +111,12 @@ pub enum ProposalAction {
     /// Issue #532: remove the default oracle for a feed type from the ILN
     /// contract's oracle registry.
     RemoveOracle(OracleFeedType),
+    /// Issue #532: register (or update) a per-token override oracle for a
+    /// feed type on the ILN contract's oracle registry. Tuple: (feed_type,
+    /// token, oracle) — takes priority over the feed-type-wide default
+    /// registered via `RegisterOracle` when resolving the oracle for this
+    /// exact token.
+    RegisterTokenOracle(OracleFeedType, Address, Address),
     /// Issue #704: update reputation_bonus contract parameters.
     /// Tuple: (high_rep_threshold, bonus_bps, min_discount_rate_bps) —
     /// mirrors reputation_bonus::config::Config's fields.
@@ -1165,6 +1171,15 @@ impl GovContract {
                 ProposalAction::RemoveOracle(feed_type) => {
                     let args: Vec<soroban_sdk::Val> = vec![&env, feed_type.into_val(&env)];
                     Self::invoke_and_check(&env, &iln_contract, "remove_oracle", args)
+                }
+                ProposalAction::RegisterTokenOracle(feed_type, token, oracle) => {
+                    let args: Vec<soroban_sdk::Val> = vec![
+                        &env,
+                        feed_type.into_val(&env),
+                        token.into_val(&env),
+                        oracle.into_val(&env),
+                    ];
+                    Self::invoke_and_check(&env, &iln_contract, "register_token_oracle", args)
                 }
             };
 

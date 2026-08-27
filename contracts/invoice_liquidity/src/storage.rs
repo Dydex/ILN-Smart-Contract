@@ -85,6 +85,21 @@ pub enum DataKey {
     /// Cached oracle interface version verified at register_oracle time,
     /// keyed by feed type.
     OracleInterfaceVersion(crate::oracle_registry::OracleFeedType),
+    /// Issue #circuit-breaker: whether the oracle circuit breaker for a
+    /// feed type + token resolution channel is tripped (sticky — cleared
+    /// only via governance-gated `reset_oracle_circuit`, never auto-cleared
+    /// by a fresh query, to avoid flapping).
+    OracleCircuitTripped(crate::oracle_registry::OracleFeedType, Address),
+    /// Issue #price-deviation: list of registered price-reporting oracle
+    /// sources for a feed type, consulted together for cross-source
+    /// deviation checking. Distinct from OracleRegistry/TokenOracle (the
+    /// single-oracle model used for boolean payer verification, where
+    /// deviation checking doesn't apply).
+    PriceSources(crate::oracle_registry::OracleFeedType),
+    /// Issue #price-deviation: governance-configurable maximum allowed
+    /// deviation (basis points) between a price source's reported price
+    /// and the cross-source median before it's rejected as an outlier.
+    MaxPriceDeviationBps,
 }
 
 // ----------------------------------------------------------------

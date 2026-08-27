@@ -40,9 +40,9 @@ The `update_verification` method should enforce access control (e.g., `require_a
 
 ## Staleness Policy
 
-ILN treats oracle data older than **7 days** (604 800 seconds) as unverified. Oracle operators must refresh records at least every 7 days to keep payers active.
+`fund_invoice`'s `require_oracle_verification` path (the live enforcement point) checks freshness against `max_oracle_age_ledgers`, a per-protocol setting in **ledgers**, not seconds — default `DEFAULT_MAX_ORACLE_AGE_LEDGERS` = 17 280 ledgers, ≈ **24 hours** at 5 seconds/ledger. It's read/set via `get_max_oracle_age()` / `set_max_oracle_age()` (admin-gated, rate-limited to one call per ~10 minutes). Oracle operators must refresh records more often than this window to keep payers passing verification.
 
-The threshold is defined in `oracle_interface.rs` as `ORACLE_STALENESS_THRESHOLD_SECS`.
+`oracle_interface.rs` also defines `ORACLE_STALENESS_THRESHOLD_SECS` (7 days) and an `is_fresh()` helper — this is **legacy/unused**: nothing in `fund_invoice` or any other live code path calls `is_fresh()`. Don't rely on the 7-day figure; it does not reflect enforced behavior. See [oracle-attack-economics.md](oracle-attack-economics.md) for why the actual enforced window matters to attack-cost modeling.
 
 ---
 
